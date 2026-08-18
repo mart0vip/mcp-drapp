@@ -41,8 +41,10 @@ ANALITOS: dict[str, dict] = {
     # dosis de levotiroxina en mcg (ej. "T4 100"), no resultado de T4 libre.
     # Confirmado por la medica, ronda de correccion 2 (2026-08-18).
     "t4l":              {"pat": [r"t4\s*l", r"t4\s*libre"],                "unit": "ng/dL",   "rango": (0.1, 12)},
-    "ldl":              {"pat": [r"ldl(?:-c)?"],                           "unit": "mg/dL",   "rango": (10, 500)},
-    "hdl":              {"pat": [r"hdl(?:-c)?"],                           "unit": "mg/dL",   "rango": (5, 200)},
+    # "colesterol ldl"/"colesterol hdl" son sinonimos de ldl/hdl (no analitos
+    # nuevos), aprobado por la medica ronda 3 (2026-08-18).
+    "ldl":              {"pat": [r"ldl(?:-c)?", r"colesterol ldl"],        "unit": "mg/dL",   "rango": (10, 500)},
+    "hdl":              {"pat": [r"hdl(?:-c)?", r"colesterol hdl"],        "unit": "mg/dL",   "rango": (5, 200)},
     "colesterol_total": {"pat": [r"col\s*t(?:otal)?", r"colesterol total"], "unit": "mg/dL",  "rango": (50, 600)},
     # "tag" es sinonimo de trigliceridos en esta clinica (no es un analito
     # nuevo), confirmado por la medica, ronda de correccion 2.
@@ -52,12 +54,49 @@ ANALITOS: dict[str, dict] = {
     "homa":             {"pat": [r"homa(?:-ir)?"],                         "unit": "",        "rango": (0.1, 50)},
     "vitamina_d":       {"pat": [r"vitamina\s*d", r"25\s*-?\s*oh"],        "unit": "ng/mL",   "rango": (1, 150)},
     "b12":              {"pat": [r"vitamina\s*b12", r"b12"],               "unit": "pg/mL",   "rango": (50, 3000)},
-    "uricemia":         {"pat": [r"uricemia", r"uric"],                    "unit": "mg/dL",   "rango": (0.5, 20)},
+    # "acido urico"/"ácido úrico" son sinonimos de uricemia (no analito
+    # nuevo), aprobado por la medica ronda 3 (2026-08-18).
+    "uricemia":         {"pat": [r"uricemia", r"uric", r"ácido úrico", r"acido urico"], "unit": "mg/dL", "rango": (0.5, 20)},
     "shbg":             {"pat": [r"shbg"],                                 "unit": "nmol/L",  "rango": (1, 300)},
     # tres analitos nuevos confirmados por la medica, ronda de correccion 2.
     "hemoglobina":      {"pat": [r"hb", r"hemoglobina"],                   "unit": "g/dL",    "rango": (5, 20)},
     "hematocrito":      {"pat": [r"hto", r"hematocrito"],                  "unit": "%",       "rango": (15, 60)},
     "imc":              {"pat": [r"imc"],                                  "unit": "",        "rango": (12, 70)},
+
+    # --- ronda 3 (2026-08-18): analitos que hoy caen en `revisar`, medidos
+    # contra el corpus real (1569 historias, 3957 evoluciones) y aprobados
+    # por la medica. Rangos deliberadamente anchos: atrapan lo absurdo, no
+    # lo infrecuente. "creatininemia" es sinonimo de "creatinina", no un
+    # analito aparte.
+    "creatinina":            {"pat": [r"creatinina", r"creatininemia"],    "unit": "mg/dL",  "rango": (0.2, 15)},
+    "homocisteina":          {"pat": [r"homocisteina", r"homocisteína"],   "unit": "µmol/L", "rango": (2, 100)},
+    "uremia":                {"pat": [r"uremia", r"urea"],                 "unit": "mg/dL",  "rango": (5, 300)},
+    "transferrina":          {"pat": [r"transferrina"],                    "unit": "mg/dL",  "rango": (100, 500)},
+    "ferremia":              {"pat": [r"ferremia"],                        "unit": "µg/dL",  "rango": (10, 300)},
+    "proteinas_totales":     {"pat": [r"proteinas totales", r"proteínas totales"], "unit": "g/dL", "rango": (3, 12)},
+    "albumina":              {"pat": [r"albumina", r"albúmina"],           "unit": "g/dL",   "rango": (1, 7)},
+    # "mg" (miligramo) como patron de magnesio SE SACO: verificado contra
+    # el corpus, genera falsos positivos claros y frecuentes -- dosis de
+    # medicacion ("Lamotrigina 200 mg: 1 comprimido", "LOSARTAN 50 MG 2
+    # COMP", "naltrexona 50 mg 1") capturan el numero de comprimidos/veces
+    # como si fuera un valor de magnesio, y ese numero (1 o 2) cae dentro
+    # del rango plausible (0.5, 5) asi que el filtro de rango no lo frena:
+    # 27 de 169 valores (16%) medidos con el patron "mg" eran justamente
+    # esto. Se deja solo "magnesio" (ronda 3, 2026-08-18).
+    "magnesio":              {"pat": [r"magnesio"],                       "unit": "mg/dL",  "rango": (0.5, 5)},
+    "atpo":                  {"pat": [r"atpo", r"anti-tpo", r"anti tpo"],  "unit": "UI/mL",  "rango": (0, 2000)},
+    "eritrosedimentacion":   {"pat": [r"eritrosedimentacion", r"eritrosedimentación", r"esd", r"vsg"], "unit": "mm/h", "rango": (1, 150)},
+    "vcm":                   {"pat": [r"vcm"],                             "unit": "fL",     "rango": (50, 130)},
+    "chcm":                  {"pat": [r"chcm"],                            "unit": "g/dL",   "rango": (25, 40)},
+    "eosinofilos":           {"pat": [r"eosinofilos", r"eosinófilos"],     "unit": "%",      "rango": (0, 40)},
+    "linfocitos":            {"pat": [r"linfocitos"],                      "unit": "%",      "rango": (0, 80)},
+    "monocitos":             {"pat": [r"monocitos"],                       "unit": "%",      "rango": (0, 30)},
+    "basofilos":             {"pat": [r"basofilos", r"basófilos"],         "unit": "%",      "rango": (0, 5)},
+    "neutrofilos":           {"pat": [r"neutrofilos", r"neutrófilos", r"neutrófilos segmentados", r"neutrofilos segmentados"], "unit": "%", "rango": (0, 95)},
+    # "testosterona total" NO se agrega: los valores reales del corpus van
+    # de 0.2 a 72.2, lo que indica que conviven dos unidades sin normalizar
+    # (ng/mL y ng/dL). Un rango unico mezclaria series incomparables.
+    # Queda en `revisar`; decision de la medica, ronda 3 (2026-08-18).
 }
 
 _NUM = r"(\d+(?:[.,]\d+)?)"

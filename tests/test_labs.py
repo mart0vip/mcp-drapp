@@ -196,14 +196,20 @@ def test_fila_de_tabla_no_reconocida_va_a_revisar():
     """Regla 2: nada se descarta en silencio, tampoco en tablas.
 
     Antes, 1132 filas del corpus (creatinina, homocisteina, colesterol
-    hdl/ldl) desaparecian sin quedar ni en labs ni en revisar.
+    hdl/ldl) desaparecian sin quedar ni en labs ni en revisar. Ronda 3
+    (2026-08-18): creatinina y homocisteina pasaron a ser analitos
+    reconocidos (ver test_creatinina_se_extrae y
+    test_homocisteina_se_extrae), asi que este ejemplo se actualizo a dos
+    etiquetas que siguen sin reconocerse: testosterona total (dos unidades
+    sin normalizar en el corpus real, se deja en revisar a proposito) y
+    plaquetas (no pedida en esta ronda).
     """
     texto = ("| Parámetro | Resultado |\n|---|---|\n"
-             "| Creatinina | 0.9 mg/dL |\n| Homocisteína | 12 µmol/L |\n")
+             "| Testosterona total | 6.7 ng/mL |\n| Plaquetas | 250 x10e3/µL |\n")
     labs, revisar = extract(texto)
-    assert all(l.analyte not in ("creatinina", "homocisteina") for l in labs)
-    assert any("Creatinina" in r for r in revisar)
-    assert any("Homocisteína" in r for r in revisar)
+    assert all(l.analyte not in ("testosterona_total", "plaquetas") for l in labs)
+    assert any("Testosterona" in r for r in revisar)
+    assert any("Plaquetas" in r for r in revisar)
 
 
 def test_glucosa_es_glucemia():
@@ -222,3 +228,148 @@ def test_anio_antes_del_valor_toma_el_valor_real():
     assert len(fe) == 1
     assert fe[0].value == 10.7
     assert "10,7" in fe[0].snippet
+
+
+# --- Ronda 3 (2026-08-18): analitos aprobados por la medica, medidos contra
+# el corpus real (1569 historias, 3957 evoluciones). Cuatro etiquetas son
+# sinonimos de analitos existentes (fusiones); el resto son analitos nuevos.
+
+def test_colesterol_hdl_es_hdl():
+    """'colesterol hdl' es sinonimo de hdl, no un analito nuevo."""
+    labs, _ = extract("colesterol hdl 55")
+    assert [(l.analyte, l.value) for l in labs] == [("hdl", 55.0)]
+
+
+def test_colesterol_ldl_es_ldl():
+    """'colesterol ldl' es sinonimo de ldl, no un analito nuevo."""
+    labs, _ = extract("colesterol ldl 126")
+    assert [(l.analyte, l.value) for l in labs] == [("ldl", 126.0)]
+
+
+def test_acido_urico_es_uricemia():
+    """'ácido úrico'/'acido urico' son sinonimos de uricemia, no un analito nuevo."""
+    for txt in ("ácido úrico 4.4", "acido urico 4.4"):
+        labs, _ = extract(txt)
+        assert [(l.analyte, l.value) for l in labs] == [("uricemia", 4.4)], txt
+
+
+def test_creatininemia_es_creatinina():
+    """'creatininemia' es sinonimo de creatinina, no un analito nuevo."""
+    labs, _ = extract("creatininemia 1.0")
+    assert [(l.analyte, l.value) for l in labs] == [("creatinina", 1.0)]
+
+
+def test_creatinina_se_extrae():
+    labs, _ = extract("creatinina 0.9")
+    assert [(l.analyte, l.value) for l in labs] == [("creatinina", 0.9)]
+
+
+def test_homocisteina_se_extrae():
+    for txt in ("homocisteina 9.8", "homocisteína 9.8"):
+        labs, _ = extract(txt)
+        assert [(l.analyte, l.value) for l in labs] == [("homocisteina", 9.8)], txt
+
+
+def test_uremia_se_extrae_y_urea_no_pisa_uremia():
+    """'urea' y 'uremia' son dos patrones del mismo analito ('uremia');
+    ninguno debe pisar al otro ni producir un analito distinto."""
+    for txt in ("uremia 41", "urea 41"):
+        labs, _ = extract(txt)
+        assert [(l.analyte, l.value) for l in labs] == [("uremia", 41.0)], txt
+
+
+def test_transferrina_se_extrae():
+    labs, _ = extract("transferrina 248")
+    assert [(l.analyte, l.value) for l in labs] == [("transferrina", 248.0)]
+
+
+def test_ferremia_se_extrae():
+    labs, _ = extract("ferremia 95")
+    assert [(l.analyte, l.value) for l in labs] == [("ferremia", 95.0)]
+
+
+def test_proteinas_totales_se_extrae():
+    for txt in ("proteinas totales 6.8", "proteínas totales 6.8"):
+        labs, _ = extract(txt)
+        assert [(l.analyte, l.value) for l in labs] == [("proteinas_totales", 6.8)], txt
+
+
+def test_albumina_se_extrae():
+    for txt in ("albumina 4.5", "albúmina 4.5"):
+        labs, _ = extract(txt)
+        assert [(l.analyte, l.value) for l in labs] == [("albumina", 4.5)], txt
+
+
+def test_magnesio_se_extrae_pero_no_el_patron_mg():
+    """Se agrega 'magnesio' pero NO 'mg': verificado contra el corpus, "mg"
+    como patron genera falsos positivos claros (dosis de medicacion, ej.
+    'Lamotrigina 200 mg: 1 comprimido' capturaria magnesio=1, un valor
+    dentro del rango plausible que el filtro de rango no frena)."""
+    labs, _ = extract("magnesio 2.3")
+    assert [(l.analyte, l.value) for l in labs] == [("magnesio", 2.3)]
+
+    labs2, revisar2 = extract("Lamotrigina 200 mg: 1 comprimido diario")
+    assert all(l.analyte != "magnesio" for l in labs2)
+
+
+def test_atpo_se_extrae():
+    for txt in ("atpo 12.9", "anti-tpo 12.9", "anti tpo 12.9"):
+        labs, _ = extract(txt)
+        assert [(l.analyte, l.value) for l in labs] == [("atpo", 12.9)], txt
+
+
+def test_eritrosedimentacion_se_extrae_esd_y_vsg_no_colisionan():
+    """'esd' y 'vsg' son siglas cortas; verificado contra el corpus que no
+    colisionan con otros tokens."""
+    for txt in ("eritrosedimentacion 10", "eritrosedimentación 10", "esd 10", "vsg 10"):
+        labs, _ = extract(txt)
+        assert [(l.analyte, l.value) for l in labs] == [("eritrosedimentacion", 10.0)], txt
+
+
+def test_vcm_se_extrae():
+    labs, _ = extract("vcm 88")
+    assert [(l.analyte, l.value) for l in labs] == [("vcm", 88.0)]
+
+
+def test_chcm_se_extrae():
+    labs, _ = extract("chcm 33.3")
+    assert [(l.analyte, l.value) for l in labs] == [("chcm", 33.3)]
+
+
+def test_eosinofilos_se_extrae():
+    for txt in ("eosinofilos 4", "eosinófilos 4"):
+        labs, _ = extract(txt)
+        assert [(l.analyte, l.value) for l in labs] == [("eosinofilos", 4.0)], txt
+
+
+def test_linfocitos_se_extrae():
+    labs, _ = extract("linfocitos 32")
+    assert [(l.analyte, l.value) for l in labs] == [("linfocitos", 32.0)]
+
+
+def test_monocitos_se_extrae():
+    labs, _ = extract("monocitos 7")
+    assert [(l.analyte, l.value) for l in labs] == [("monocitos", 7.0)]
+
+
+def test_basofilos_se_extrae():
+    for txt in ("basofilos 1", "basófilos 1"):
+        labs, _ = extract(txt)
+        assert [(l.analyte, l.value) for l in labs] == [("basofilos", 1.0)], txt
+
+
+def test_neutrofilos_se_extrae_incluido_segmentados():
+    for txt in ("neutrofilos 57", "neutrófilos 57",
+                "neutrófilos segmentados 57", "neutrofilos segmentados 57"):
+        labs, _ = extract(txt)
+        assert [(l.analyte, l.value) for l in labs] == [("neutrofilos", 57.0)], txt
+
+
+def test_testosterona_total_no_se_agrega_queda_en_revisar():
+    """Los valores reales del corpus van de 0.2 a 72.2: conviven dos
+    unidades sin normalizar (ng/mL y ng/dL). No se agrega como analito;
+    el valor sigue sin adivinarse (va a revisar via `_CANDIDATO`, que
+    captura el token inmediatamente antes del numero: 'total 6.7')."""
+    labs, revisar = extract("testosterona total 6.7")
+    assert all(l.analyte != "testosterona_total" for l in labs)
+    assert any("total" in r.lower() and "6.7" in r for r in revisar)
