@@ -130,6 +130,24 @@ def _es_separador(celda: str) -> bool:
     return set(celda.replace("-", "").replace(":", "")) == set()
 
 
+# Una celda es "valor escalar" si trae un numero suelto (con o sin unidad) y
+# NO tiene forma de rango de referencia ni de limite: "70-100", "187-883",
+# "<5.7", "Hasta 2,5", "2.6 a 24.6". La distincion importa porque una tabla
+# sana tiene UNA columna de valor mas una de referencia, mientras que una
+# tabla de comparacion entre visitas tiene DOS columnas de valor y ahi la
+# columna correcta deja de ser inequivoca.
+_RANGO_REF = re.compile(
+    r"\d\s*[-–—]\s*\d|^\s*[<>≤≥]|\bhasta\b|\bmenor\b|\bmayor\b|\d\s+a\s+\d",
+    re.I)
+
+
+def _es_valor_escalar(celda: str) -> bool:
+    c = re.sub(r"\*+", "", celda).strip()
+    if not re.search(r"\d", c):
+        return False
+    return not _RANGO_REF.search(c)
+
+
 def _es_fecha(celda: str) -> bool:
     # html2text envuelve todo <th> en **negrita**, asi que el encabezado real
     # llega como "**20/06/2024**". Sin despojar los asteriscos la deteccion de
@@ -244,6 +262,19 @@ def _de_tablas(texto: str) -> tuple[list[Lab], set[tuple[int, int]], list[str]]:
         if tiene_encabezado:
             candidatas_fecha = sum(1 for c in filas[0][1:] if _es_fecha(c))
             ambigua = candidatas_fecha >= 2
+        # La forma del encabezado no alcanza: "Ene 2025 | Jun 2025" o
+        # "Basal | 1 mes" esquivaban _es_fecha y el parser emitia la columna
+        # vieja como si fuera actual (HDL 68 de enero en una evolucion de
+        # julio, B12 1354 de 2023 en una de 2025). Criterio robusto: contar
+        # columnas de valor escalar en las filas de datos. Dos o mas => la
+        # columna correcta es ambigua y no se adivina.
+        if not ambigua:
+            for i, celdas in enumerate(filas):
+                if i == header_idx or len(celdas) < 2 or _es_separador(celdas[1]):
+                    continue
+                if sum(1 for c in celdas[1:] if _es_valor_escalar(c)) >= 2:
+                    ambigua = True
+                    break
 
         for i, (m, celdas) in enumerate(zip(bloque, filas)):
             if len(celdas) < 2 or _es_separador(celdas[1]):
@@ -259,6 +290,14 @@ def _de_tablas(texto: str) -> tuple[list[Lab], set[tuple[int, int]], list[str]]:
             etiqueta = re.sub(r"\*+", "", celdas[0]).strip().lower()
             mv = re.search(_NUM, celdas[1])
             if not mv:
+                # La columna de valor no tiene numero pero la fila si puede
+                # tenerlo en otra columna: caso real
+                # "| Vitamina D | *No se hizo* | 34,4 ng/mL | Suficiencia |",
+                # donde el 34,4 desaparecia sin quedar ni en labs ni en
+                # revisar. No se adivina cual columna es: va a revisar.
+                if any(re.search(_NUM, c) for c in celdas[1:]):
+                    revisar.append(m.group(0).strip())
+                    spans.add(m.span())
                 continue
             for analito, pat in _orden_patrones():
                 if re.fullmatch(rf"\s*{pat}\s*", etiqueta, re.I):

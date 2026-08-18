@@ -373,3 +373,58 @@ def test_testosterona_total_no_se_agrega_queda_en_revisar():
     labs, revisar = extract("testosterona total 6.7")
     assert all(l.analyte != "testosterona_total" for l in labs)
     assert any("total" in r.lower() and "6.7" in r for r in revisar)
+
+
+# --- Revision final: dos fallas de atribucion verificadas contra el corpus ---
+
+def test_tabla_comparativa_con_encabezado_mes_anio():
+    """Caso real (data/hce/4f6733ee.json, evolucion 2025-07-01).
+
+    La deteccion de ambiguedad miraba la FORMA del encabezado (DD/MM/AAAA),
+    asi que 'Ene 2025 | Jun 2025' la esquivaba y se emitia la columna vieja
+    como si fuera actual: HDL 68 de enero en una evolucion de julio, cuando
+    el valor real era 101 y la propia medica lo marco como llamativo.
+    """
+    texto = (
+        "| Parámetro | Ene 2025 | Jun 2025 | Comentario |\n"
+        "|---|---|---|---|\n"
+        "| **Colesterol HDL** | 68 mg/dL | **101 mg/dL** | Aumento llamativo |\n"
+    )
+    labs, revisar = extract(texto)
+    assert all(l.analyte != "hdl" for l in labs)
+    assert not any(l.value in (68.0, 101.0) for l in labs)
+    assert any("HDL" in r for r in revisar)
+
+
+def test_tabla_comparativa_sin_unidades():
+    """Caso real (data/hce/2dfa8b70.json): B12 1354 de feb-2023 se emitia en
+    una evolucion de 2025; el valor reciente era 378."""
+    texto = ("| Parámetro | Feb 2023 | Oct 2023 | Rango |\n|---|---|---|---|\n"
+             "| Vitamina B12 | 1354 | 378 | 187–883 |\n")
+    labs, revisar = extract(texto)
+    assert all(l.analyte != "b12" for l in labs)
+    assert any("1354" in r for r in revisar)
+
+
+def test_tabla_sana_con_columna_de_referencia_sigue_funcionando():
+    """La columna de referencia NO debe confundirse con una segunda columna
+    de valor: '70-100' es un rango, no un resultado."""
+    texto = ("| Parámetro | Resultado | Referencia | Interpretación |\n|---|---|---|---|\n"
+             "| Glucemia | 88 mg/dL | 70-100 | Normal |\n"
+             "| HbA1c | 5.4 % | <5.7 | Normal |\n"
+             "| HOMA-IR | 2,2 | Hasta 2,5 | Límite |\n")
+    labs, _ = extract(texto)
+    por = {l.analyte: l.value for l in labs}
+    assert por["glucemia"] == 88.0
+    assert por["hba1c"] == 5.4
+    assert por["homa"] == 2.2
+
+
+def test_fila_con_valor_en_otra_columna_no_se_pierde():
+    """Caso real: '| Vitamina D | *No se hizo* | 34,4 ng/mL | Suficiencia |'.
+    El 34,4 desaparecia sin quedar ni en labs ni en revisar."""
+    texto = ("| Parámetro | Ene | Jun | Estado |\n|---|---|---|---|\n"
+             "| **Vitamina D** | *No se hizo* | 34,4 ng/mL | Suficiencia |\n")
+    labs, revisar = extract(texto)
+    assert all(l.analyte != "vitamina_d" for l in labs)
+    assert any("34,4" in r for r in revisar), "el valor real tiene que quedar visible"
