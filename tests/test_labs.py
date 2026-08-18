@@ -149,3 +149,76 @@ def test_hb_no_pisa_hba1c():
 def test_tag_es_trigliceridos():
     labs, _ = extract("TAG 197")
     assert [l.analyte for l in labs] == ["trigliceridos"]
+
+
+# --- Ronda 3: hallazgos de la revision independiente, verificados contra el corpus ---
+
+def test_tabla_multi_fecha_con_encabezado_en_negrita():
+    """El caso que rompia en produccion (data/hce/28d12c3e.json).
+
+    html2text envuelve todo <th> en **negrita**, asi que el encabezado real
+    llega como `**20/06/2024**`. El test anterior usaba encabezados SIN
+    negrita -- una forma que no existe en el pipeline -- y por eso la
+    proteccion de tablas multi-fecha nunca se ejercitaba de verdad.
+
+    En la evolucion real, fechada 2025-03-11, se emitia glucemia=91 (la
+    columna de junio 2024) cuando el valor de esa fecha era 114.
+    """
+    texto = (
+        "| **Parámetro** | **20/06/2024** | **04/03/2025** | **Valores de Referencia** |\n"
+        "|---|---|---|---|\n"
+        "| **Glucemia** | 91 mg/dL | 114 mg/dL | 74-100 mg/dL |\n"
+        "| **Insulina** | 8.4 µUI/mL | 9.5 µUI/mL | 2.6-24.6 µUI/mL |\n"
+    )
+    labs, revisar = extract(texto)
+    assert all(l.analyte not in ("glucemia", "insulina") for l in labs)
+    assert not any(l.value in (91, 8.4) for l in labs)
+    assert any("Glucemia" in r for r in revisar)
+
+
+def test_no_hdl_y_razones_no_se_emiten_como_hdl():
+    """Caso real: una sola nota emitia tres HDL, dos falsos."""
+    texto = ("Lipidos: LDL 90 mg/dl, HDL 34 mg/dl (bajo), TG 292 mg/dl, "
+             "CT 182, no-HDL 148, CT/HDL 5,4 (alto).")
+    labs, revisar = extract(texto)
+    hdl = [l.value for l in labs if l.analyte == "hdl"]
+    assert hdl == [34.0], f"solo el HDL real; se obtuvo {hdl}"
+    assert any("148" in r for r in revisar)
+    assert any("5,4" in r for r in revisar)
+
+
+def test_razon_tg_hdl_tampoco_se_emite():
+    labs, _ = extract("TG/HDL: 1,54")
+    assert all(l.analyte != "hdl" for l in labs)
+
+
+def test_fila_de_tabla_no_reconocida_va_a_revisar():
+    """Regla 2: nada se descarta en silencio, tampoco en tablas.
+
+    Antes, 1132 filas del corpus (creatinina, homocisteina, colesterol
+    hdl/ldl) desaparecian sin quedar ni en labs ni en revisar.
+    """
+    texto = ("| Parámetro | Resultado |\n|---|---|\n"
+             "| Creatinina | 0.9 mg/dL |\n| Homocisteína | 12 µmol/L |\n")
+    labs, revisar = extract(texto)
+    assert all(l.analyte not in ("creatinina", "homocisteina") for l in labs)
+    assert any("Creatinina" in r for r in revisar)
+    assert any("Homocisteína" in r for r in revisar)
+
+
+def test_glucosa_es_glucemia():
+    """27 apariciones reales de 'Glucosa: NN mg/dL' que se perdian."""
+    labs, _ = extract("Glucosa: 85 mg/dL")
+    assert [(l.analyte, l.value) for l in labs] == [("glucemia", 85.0)]
+
+
+def test_anio_antes_del_valor_toma_el_valor_real():
+    """`Ferritina 2024: 10,7` -> el 2024 es el año de la nota.
+
+    Antes se emitia ferritina=2024 y el 10,7 desaparecia por completo.
+    """
+    labs, _ = extract("**Ferritina 2024:** 10,7 ng/mL (ya baja).")
+    fe = [l for l in labs if l.analyte == "ferritina"]
+    assert len(fe) == 1
+    assert fe[0].value == 10.7
+    assert "10,7" in fe[0].snippet

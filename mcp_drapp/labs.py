@@ -35,7 +35,7 @@ from dataclasses import dataclass
 ANALITOS: dict[str, dict] = {
     "peso":             {"pat": [r"PA", r"peso"],                          "unit": "kg",      "rango": (25, 350)},
     "hba1c":            {"pat": [r"hba1c", r"hba2c", r"hemoglobina glicosilada", r"glicosilada"], "unit": "%", "rango": (3, 20)},
-    "glucemia":         {"pat": [r"glucemia", r"gluc"],                    "unit": "mg/dL",   "rango": (20, 800)},
+    "glucemia":         {"pat": [r"glucemia", r"glucosa", r"gluc"],        "unit": "mg/dL",   "rango": (20, 800)},
     "tsh":              {"pat": [r"tsh"],                                  "unit": "µUI/mL",  "rango": (0.001, 200)},
     # 't4' solo (sin 'l'/'libre') se saco del patron: en el corpus real es
     # dosis de levotiroxina en mcg (ej. "T4 100"), no resultado de T4 libre.
@@ -92,7 +92,10 @@ def _es_separador(celda: str) -> bool:
 
 
 def _es_fecha(celda: str) -> bool:
-    return bool(_FECHA_HEADER.match(celda.strip()))
+    # html2text envuelve todo <th> en **negrita**, asi que el encabezado real
+    # llega como "**20/06/2024**". Sin despojar los asteriscos la deteccion de
+    # tablas multi-fecha no se activaba nunca en produccion.
+    return bool(_FECHA_HEADER.match(re.sub(r"\*+", "", celda).strip()))
 
 
 # senales de que "PA" es presion arterial (MAPA), no peso: mmHg, MAPA,
@@ -231,8 +234,31 @@ def _de_tablas(texto: str) -> tuple[list[Lab], set[tuple[int, int]], list[str]]:
                     labs.append(Lab(analito, _num(mv.group(1)), unidad, "tabla", m.group(0).strip()))
                     spans.add(m.span())
                     break
+            else:
+                # Ninguna etiqueta del diccionario matcheo. _de_texto tiene su
+                # red de contencion (_CANDIDATO) pero las tablas no la tenian:
+                # 1132 filas del corpus (creatinina, homocisteina, colesterol
+                # hdl/ldl...) desaparecian sin quedar ni en labs ni en revisar.
+                revisar.append(m.group(0).strip())
+                spans.add(m.span())
 
     return labs, spans, revisar
+
+
+def _parece_anio(valor: str) -> bool:
+    """Un entero de cuatro digitos en rango de año calendario."""
+    return bool(re.fullmatch(r"(?:19|20)\d{2}", valor.strip()))
+
+
+def _es_derivado(texto: str, inicio: int) -> bool:
+    """True si el token del analito es parte de una razon o de un derivado.
+
+    Casos reales del corpus: "CT/HDL 5,4" (razon adimensional), "TG/HDL: 1,54"
+    y "no-HDL 148" (otro analito, clinicamente inverso). Los tres se emitian
+    como si fueran HDL y el filtro de rango no los atrapaba.
+    """
+    previo = texto[max(0, inicio - 4):inicio].lower()
+    return previo.rstrip().endswith("/") or bool(re.search(r"\bno\s*-?\s*$", previo))
 
 
 def _de_texto(texto: str, excluir: set[tuple[int, int]]) -> tuple[list[Lab], list[str]]:
@@ -247,6 +273,21 @@ def _de_texto(texto: str, excluir: set[tuple[int, int]]) -> tuple[list[Lab], lis
             ini, fin = max(0, m.start() - 25), min(len(texto), m.end() + 25)
             snippet = texto[ini:fin].strip()
 
+            if _es_derivado(texto, m.start()):
+                revisar.append(snippet)
+                continue
+
+            # "Ferritina 2024: 10,7" -> el primer numero era el año de la nota
+            # y el valor real es el que sigue a los dos puntos. Sin esto el
+            # 10,7 desaparecia de labs y de revisar.
+            valor = m.group(1)
+            sig = re.match(rf"\s*:\s*\**\s*{_NUM}", texto[m.end():])
+            if sig and _parece_anio(valor):
+                valor = sig.group(1)
+                fin = min(len(texto), m.end() + sig.end() + 25)
+                snippet = texto[ini:fin].strip()
+                vistos.add((m.start(), m.end() + sig.end()))
+
             if analito == "peso" and pat == "PA":
                 # excepcion PA=peso: si el contexto (ventana ~40 caracteres
                 # alrededor del match) tiene pinta de MAPA/presion arterial,
@@ -256,7 +297,7 @@ def _de_texto(texto: str, excluir: set[tuple[int, int]]) -> tuple[list[Lab], lis
                     revisar.append(snippet)
                     continue
 
-            labs.append(Lab(analito, _num(m.group(1)), ANALITOS[analito]["unit"],
+            labs.append(Lab(analito, _num(valor), ANALITOS[analito]["unit"],
                             "texto", snippet))
 
     conocidos = {p for _, p in _orden_patrones()}
