@@ -20,23 +20,26 @@ No necesitás saber programar. Todos los comandos se copian y pegan.
 
 ---
 
-## Paso 1 — Copiar el código
+## Paso 1 — Clonar el repositorio
 
-Pedile a quien te pasa el proyecto una copia de la carpeta `drapp`. Ponela en tu carpeta de Documentos.
+El proyecto vive en un repositorio privado. Pedile a Martín que te invite como
+colaborador; te llega un mail de GitHub para aceptar.
 
-> ⚠️ **Importante para quien entrega la copia:** entregá el código **sin el historial de git**. La forma segura es:
->
-> ```bash
-> cd ~/Documents/drapp && git archive --format=tar HEAD | (mkdir -p /tmp/drapp-limpio && tar -x -C /tmp/drapp-limpio)
-> ```
->
-> y comprimir `/tmp/drapp-limpio`. El historial de git contiene datos de un paciente real de versiones viejas; el código actual no.
+Una vez aceptada la invitación:
+
+```bash
+cd ~/Documents && git clone https://github.com/mart0vip/mcp-drapp.git drapp
+```
 
 Todos los comandos de acá en adelante se corren parado en esa carpeta:
 
 ```bash
 cd ~/Documents/drapp
 ```
+
+> **El repositorio no contiene ninguna historia clínica.** Solo el código. Los
+> datos de pacientes los descargás vos en el paso 5, con tu propia sesión, y
+> quedan únicamente en tu máquina.
 
 ---
 
