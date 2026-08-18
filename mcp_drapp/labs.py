@@ -10,28 +10,36 @@ Reglas duras (spec seccion 6):
      inequivoca: no se extrae nada de esa tabla, cada fila va a `revisar`
      con su texto original (correccion 2026-08-18, ver test
      test_tabla_multi_fecha_no_extrae_y_manda_a_revisar).
+  5. Todo valor fuera del rango plausible de su analito (ver `rango` en
+     ANALITOS) NO se emite como Lab: se manda a `revisar` con su snippet
+     original, nunca se descarta en silencio (correccion 2026-08-18, ronda
+     1: el corpus real tenia HOMA=2024 y vitamina_d=2024 -- años colados
+     como si fueran resultados -- y otros imposibles como hba1c=663 o
+     peso=113900; ver test_ano_no_se_confunde_con_valor).
 """
 import re
 from dataclasses import dataclass
 
-# analito canonico -> (patrones incluidas erratas observadas, unidad)
+# analito canonico -> patrones (incluidas erratas observadas), unidad y
+# rango plausible (min, max) inclusive. El rango es deliberadamente ancho:
+# busca atrapar lo absurdo (un año, un peso de 2 kg), no lo infrecuente.
 ANALITOS: dict[str, dict] = {
-    "peso":             {"pat": [r"PA", r"peso"],                          "unit": "kg"},
-    "hba1c":            {"pat": [r"hba1c", r"hba2c", r"hemoglobina glicosilada", r"glicosilada"], "unit": "%"},
-    "glucemia":         {"pat": [r"glucemia", r"gluc"],                    "unit": "mg/dL"},
-    "tsh":              {"pat": [r"tsh"],                                  "unit": "µUI/mL"},
-    "t4l":              {"pat": [r"t4\s*l", r"t4\s*libre", r"t4"],         "unit": "ng/dL"},
-    "ldl":              {"pat": [r"ldl(?:-c)?"],                           "unit": "mg/dL"},
-    "hdl":              {"pat": [r"hdl(?:-c)?"],                           "unit": "mg/dL"},
-    "colesterol_total": {"pat": [r"col\s*t(?:otal)?", r"colesterol total"], "unit": "mg/dL"},
-    "trigliceridos":    {"pat": [r"trigliceridos", r"triglic[eé]ridos", r"tg"], "unit": "mg/dL"},
-    "ferritina":        {"pat": [r"ferritina"],                            "unit": "ng/mL"},
-    "insulina":         {"pat": [r"insulina"],                             "unit": "µU/mL"},
-    "homa":             {"pat": [r"homa(?:-ir)?"],                         "unit": ""},
-    "vitamina_d":       {"pat": [r"vitamina\s*d", r"25\s*-?\s*oh"],        "unit": "ng/mL"},
-    "b12":              {"pat": [r"vitamina\s*b12", r"b12"],               "unit": "pg/mL"},
-    "uricemia":         {"pat": [r"uricemia", r"uric"],                    "unit": "mg/dL"},
-    "shbg":             {"pat": [r"shbg"],                                 "unit": "nmol/L"},
+    "peso":             {"pat": [r"PA", r"peso"],                          "unit": "kg",      "rango": (25, 350)},
+    "hba1c":            {"pat": [r"hba1c", r"hba2c", r"hemoglobina glicosilada", r"glicosilada"], "unit": "%", "rango": (3, 20)},
+    "glucemia":         {"pat": [r"glucemia", r"gluc"],                    "unit": "mg/dL",   "rango": (20, 800)},
+    "tsh":              {"pat": [r"tsh"],                                  "unit": "µUI/mL",  "rango": (0.001, 200)},
+    "t4l":              {"pat": [r"t4\s*l", r"t4\s*libre", r"t4"],         "unit": "ng/dL",   "rango": (0.1, 12)},
+    "ldl":              {"pat": [r"ldl(?:-c)?"],                           "unit": "mg/dL",   "rango": (10, 500)},
+    "hdl":              {"pat": [r"hdl(?:-c)?"],                           "unit": "mg/dL",   "rango": (5, 200)},
+    "colesterol_total": {"pat": [r"col\s*t(?:otal)?", r"colesterol total"], "unit": "mg/dL",  "rango": (50, 600)},
+    "trigliceridos":    {"pat": [r"trigliceridos", r"triglic[eé]ridos", r"tg"], "unit": "mg/dL", "rango": (20, 2000)},
+    "ferritina":        {"pat": [r"ferritina"],                            "unit": "ng/mL",   "rango": (1, 3000)},
+    "insulina":         {"pat": [r"insulina"],                             "unit": "µU/mL",   "rango": (0.5, 400)},
+    "homa":             {"pat": [r"homa(?:-ir)?"],                         "unit": "",        "rango": (0.1, 50)},
+    "vitamina_d":       {"pat": [r"vitamina\s*d", r"25\s*-?\s*oh"],        "unit": "ng/mL",   "rango": (1, 150)},
+    "b12":              {"pat": [r"vitamina\s*b12", r"b12"],               "unit": "pg/mL",   "rango": (50, 3000)},
+    "uricemia":         {"pat": [r"uricemia", r"uric"],                    "unit": "mg/dL",   "rango": (0.5, 20)},
+    "shbg":             {"pat": [r"shbg"],                                 "unit": "nmol/L",  "rango": (1, 300)},
 }
 
 _NUM = r"(\d+(?:[.,]\d+)?)"
@@ -69,6 +77,29 @@ def _es_fecha(celda: str) -> bool:
     return bool(_FECHA_HEADER.match(celda.strip()))
 
 
+def _en_rango(analito: str, valor: float) -> bool:
+    lo, hi = ANALITOS[analito]["rango"]
+    return lo <= valor <= hi
+
+
+def _filtrar_rango(candidatos: list[Lab]) -> tuple[list[Lab], list[str], dict[str, int]]:
+    """Aplica el rango plausible de cada analito a una lista de candidatos.
+
+    Nunca descarta en silencio: lo que cae fuera de rango se devuelve en
+    `revisar` con su snippet intacto. `rechazos` cuenta cuantos candidatos
+    se filtraron por analito (solo para diagnostico/medicion de cobertura;
+    no forma parte de la interfaz minima del modulo).
+    """
+    aceptados, revisar, rechazos = [], [], {}
+    for l in candidatos:
+        if _en_rango(l.analyte, l.value):
+            aceptados.append(l)
+        else:
+            revisar.append(l.snippet)
+            rechazos[l.analyte] = rechazos.get(l.analyte, 0) + 1
+    return aceptados, revisar, rechazos
+
+
 def _bloques_tabla(texto: str) -> list[list[re.Match]]:
     """Agrupa lineas de tabla markdown consecutivas: una lista por tabla.
 
@@ -102,6 +133,10 @@ def _de_tablas(texto: str) -> tuple[list[Lab], set[tuple[int, int]], list[str]]:
     confiable de distinguir encabezado de datos: se procesa cada fila como
     en la version original (alto valor si la etiqueta matchea un analito
     conocido).
+
+    Los `Lab` que devuelve son candidatos: todavia no pasaron el filtro de
+    rango plausible (eso lo aplica `_filtrar_rango`, llamado desde
+    `extract`/`extract_con_rechazos`).
     """
     labs: list[Lab] = []
     spans: set[tuple[int, int]] = set()
@@ -172,11 +207,23 @@ def _de_texto(texto: str, excluir: set[tuple[int, int]]) -> tuple[list[Lab], lis
 def extract(texto: str | None) -> tuple[list[Lab], list[str]]:
     """Devuelve (labs detectados, tokens ambiguos a revisar).
 
-    Nunca adivina: lo que no esta en ANALITOS, o cuya columna de tabla es
-    ambigua, va a `revisar`.
+    Nunca adivina: lo que no esta en ANALITOS, cuya columna de tabla es
+    ambigua, o cuyo valor cae fuera del rango plausible del analito
+    (ver `rango` en ANALITOS), va a `revisar` en vez de emitirse como Lab.
+    """
+    labs, revisar, _ = extract_con_rechazos(texto)
+    return labs, revisar
+
+
+def extract_con_rechazos(texto: str | None) -> tuple[list[Lab], list[str], dict[str, int]]:
+    """Como extract(), pero ademas devuelve cuantos candidatos se
+    descartaron por estar fuera de rango, por analito. Pensada para
+    diagnostico y medicion de cobertura (Step 5); no es parte de la
+    interfaz minima del modulo (`Lab`, `extract`, `ANALITOS`).
     """
     if not texto:
-        return [], []
-    labs_t, spans, revisar_t = _de_tablas(texto)
-    labs_x, revisar_x = _de_texto(texto, spans)
-    return labs_t + labs_x, revisar_t + revisar_x
+        return [], [], {}
+    candidatos_t, spans, revisar_t = _de_tablas(texto)
+    candidatos_x, revisar_x = _de_texto(texto, spans)
+    labs, revisar_rango, rechazos = _filtrar_rango(candidatos_t + candidatos_x)
+    return labs, revisar_t + revisar_x + revisar_rango, rechazos

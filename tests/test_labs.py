@@ -82,3 +82,21 @@ def test_tabla_multi_fecha_no_extrae_y_manda_a_revisar():
     assert not any(l.value in (91, 114) for l in labs)
     assert any("glucemia" in r.lower() for r in revisar)
     assert any("91" in r and "114" in r for r in revisar)
+
+
+def test_ano_no_se_confunde_con_valor():
+    """El corpus tenia HOMA=2024, vitamina_d=2024: eran años, no resultados."""
+    labs, revisar = extract("homa 2024")
+    assert all(l.analyte != "homa" for l in labs)
+    assert any("2024" in r for r in revisar)
+
+
+def test_valor_fuera_de_rango_va_a_revisar_con_snippet():
+    labs, revisar = extract("hba1c 663")
+    assert labs == []
+    assert any("663" in r for r in revisar)
+
+
+def test_valor_dentro_de_rango_se_emite_normal():
+    labs, _ = extract("hba1c 5.4")
+    assert len(labs) == 1 and labs[0].value == 5.4
