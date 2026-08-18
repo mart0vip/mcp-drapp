@@ -95,3 +95,34 @@ def test_lab_series_declara_cobertura(db):
     s = lab_series(db, consumer_id="a1")
     assert s["cobertura"]["evoluciones_totales"] == 2
     assert s["cobertura"]["con_labs"] == 1
+
+
+# --- Normalizacion de fechas: 241 evoluciones del corpus traen timestamp ISO ---
+
+def test_fecha_iso_con_hora_se_normaliza(tmp_path):
+    ruta = tmp_path / "i.db"
+    construir(ruta, [_p("a1", "Test", "Uno", "111", [
+        _evo("records/1", "2021-09-02T21:01:05.098Z", "<p>x</p>"),
+    ])])
+    r = get_patient(ruta, consumer_id="a1")
+    assert r["records"][0]["date"] == "2021-09-02"
+    assert r["patient"]["last_visit"] == "2021-09-02"
+    assert r["patient"]["first_visit"] == "2021-09-02"
+
+
+def test_filtro_hasta_incluye_el_mismo_dia(tmp_path):
+    """Antes del fix el registro quedaba fuera de su propio dia:
+    '2026-06-12T10:00:00.000Z' <= '2026-06-12' es False."""
+    ruta = tmp_path / "i.db"
+    construir(ruta, [_p("a1", "Test", "Uno", "111", [
+        _evo("records/1", "2026-06-12T10:00:00.000Z", "<p>x</p>"),
+    ])])
+    assert len(get_patient(ruta, consumer_id="a1", hasta="2026-06-12")["records"]) == 1
+
+
+def test_fecha_invalida_no_rompe(tmp_path):
+    ruta = tmp_path / "i.db"
+    construir(ruta, [_p("a1", "Test", "Uno", "111", [
+        _evo("records/1", "sin fecha", "<p>x</p>"),
+    ])])
+    assert get_patient(ruta, consumer_id="a1")["records"][0]["date"] is None

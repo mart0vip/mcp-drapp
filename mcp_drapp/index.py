@@ -1,6 +1,7 @@
 """Indice SQLite derivado del corpus. Se puede borrar y regenerar sin perdida."""
 import json
 import pathlib
+import re
 import sqlite3
 import unicodedata
 from datetime import datetime, timezone
@@ -56,6 +57,22 @@ def norm(s: str | None) -> str:
     return " ".join(s.lower().split())
 
 
+def fecha(v) -> str | None:
+    """Normaliza a YYYY-MM-DD.
+
+    En el corpus real 241 de las 3957 evoluciones traen la fecha como
+    timestamp ISO completo (`2021-09-02T21:01:05.098Z`) y el resto como
+    fecha simple. La comparacion de strings funciona para `desde`, pero
+    `'2026-06-12T10:00:00Z' <= '2026-06-12'` es False: un filtro `hasta`
+    excluia en silencio los registros de su propio dia. La hora completa
+    sigue disponible en la columna `raw`.
+    """
+    if not isinstance(v, str):
+        return None
+    m = re.match(r"(\d{4}-\d{2}-\d{2})", v.strip())
+    return m.group(1) if m else None
+
+
 def _autor(r: dict) -> tuple[str, str]:
     crudo = r.get("createdByName") or r.get("createdBy") or "sin firma"
     return crudo, AUTORES.get(norm(crudo), crudo)
@@ -85,19 +102,19 @@ def construir(db: pathlib.Path, pacientes: list[PacienteCorpus]) -> dict:
             # pueda reengancharse a un rowid reciclado de otro registro.
             cur = con.execute(
                 "INSERT INTO records VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (rid, p.consumer_id, sec, r.get("date"), crudo, unificado, texto,
+                (rid, p.consumer_id, sec, fecha(r.get("date")), crudo, unificado, texto,
                  r.get("content"), r.get("code"), r.get("label"), r.get("status"),
                  r.get("drug"), r.get("link"), r.get("createdAt"), r.get("updatedAt"),
                  json.dumps(r, ensure_ascii=False)))
             con.execute("INSERT INTO records_fts (rowid, text, patient_name) VALUES (?,?,?)",
                         (cur.lastrowid, texto, nombre))
             n_rec += 1
-            if r.get("date"):
-                fechas.append(r["date"])
+            if fecha(r.get("date")):
+                fechas.append(fecha(r.get("date")))
             if sec == "evoluciones":
                 for l in extract(texto)[0]:
                     con.execute("INSERT INTO labs VALUES (?,?,?,?,?,?,?,?)",
-                                (rid, p.consumer_id, r.get("date"), l.analyte,
+                                (rid, p.consumer_id, fecha(r.get("date")), l.analyte,
                                  l.value, l.unit, l.source, l.snippet))
                     n_lab += 1
         con.execute("INSERT OR REPLACE INTO patients VALUES (?,?,?,?,?,?,?,?,?,?,?)",
