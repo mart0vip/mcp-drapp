@@ -101,11 +101,27 @@ def _es_fecha(celda: str) -> bool:
 # ella confirmo (ronda de correccion 2, caso real del corpus: "Promedio de
 # PA 24 h: 119/73 mmHg"). No se agrega un analito de presion arterial: solo
 # se excluye, tal como pidio la medica.
-_SENAL_PRESION = re.compile(r"mmHg|MAPA|24\s*h\b|\b\d{2,3}\s*/\s*\d{2,3}\b", re.I)
+_SENAL_PRESION_LITERAL = re.compile(r"mmHg|MAPA|24\s*h\b", re.I)
+# candidato a "NN/NN": se valida por rango antes de aceptarlo como senal,
+# porque una fecha DD/MM (omnipresente en estas notas: "31/08", "24/05")
+# tiene la misma forma que una sistole/diastole y produciria falsos
+# positivos -- se detecto exactamente ese problema al medir contra el
+# corpus real (7 de 8 "MAPA" detectados eran en realidad un peso con una
+# fecha cerca, alguno con "kg" al lado).
+_RATIO_CANDIDATO = re.compile(r"\b(\d{2,3})\s*/\s*(\d{2,3})\b")
+
+
+def _es_forma_presion(sistole: int, diastole: int) -> bool:
+    return 70 <= sistole <= 250 and 40 <= diastole <= 150 and sistole > diastole
 
 
 def _tiene_senal_presion(fragmento: str) -> bool:
-    return bool(_SENAL_PRESION.search(fragmento))
+    if _SENAL_PRESION_LITERAL.search(fragmento):
+        return True
+    return any(
+        _es_forma_presion(int(m.group(1)), int(m.group(2)))
+        for m in _RATIO_CANDIDATO.finditer(fragmento)
+    )
 
 
 def _en_rango(analito: str, valor: float) -> bool:

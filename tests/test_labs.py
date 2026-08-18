@@ -125,6 +125,19 @@ def test_PA_sigue_siendo_peso_en_contexto_normal():
     assert len(labs) == 1 and labs[0].analyte == "peso" and labs[0].value == 108.6
 
 
+def test_PA_con_fecha_cerca_no_se_confunde_con_MAPA():
+    """Bug encontrado al medir contra el corpus real (ronda 2): una fecha
+    DD/MM cerca (omnipresente en estas notas) tiene la misma forma "NN/NN"
+    que una sistole/diastole y disparaba la excepcion MAPA por error,
+    perdiendo un peso real. Casos reales: 'PA 86,9 kg' cerca de '31/08',
+    'pa 64 kg' cerca de '22/01/2026'."""
+    labs, _ = extract("ya que tiene HTA.\n\nPA 86,9 kg\n\nProximo control 31/08")
+    assert any(l.analyte == "peso" and l.value == 86.9 for l in labs)
+
+    labs2, _ = extract("pa 64 kg\n\nLABORATORIO 22/01/2026")
+    assert any(l.analyte == "peso" and l.value == 64 for l in labs2)
+
+
 def test_hb_no_pisa_hba1c():
     labs, _ = extract("hba1c 5.4 - HB 13.4 - HTO 41.3")
     por = {l.analyte: l.value for l in labs}
