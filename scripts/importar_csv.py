@@ -41,6 +41,8 @@ def main() -> None:
                 "lastName": (fila.get("lastName") or "").strip(),
                 "dni": (fila.get("identification") or "").strip(),
                 "dob": (fila.get("dob") or "").strip(),
+                # fecha de alta del paciente: habilita la cohorte `alta_entre`
+                "createdAt": (fila.get("createdAt") or "").strip(),
             })
 
     if not pacientes:

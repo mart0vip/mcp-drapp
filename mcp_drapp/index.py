@@ -120,7 +120,7 @@ def construir(db: pathlib.Path, pacientes: list[PacienteCorpus]) -> dict:
         con.execute("INSERT OR REPLACE INTO patients VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                     (p.consumer_id, p.patient.get("lastName"), p.patient.get("firstName"),
                      nombre, norm(nombre), p.patient.get("dni"), p.patient.get("dob"),
-                     p.patient.get("createdAt"), len(fechas),
+                     fecha(p.patient.get("createdAt")), len(fechas),
                      min(fechas) if fechas else None, max(fechas) if fechas else None))
     for k, v in {"last_refresh": datetime.now(timezone.utc).isoformat(),
                  "schema_version": SCHEMA_VERSION,
@@ -227,7 +227,7 @@ def search_records(db, query: str, section: str = "evoluciones", desde=None,
 
 
 def cohort(db, contiene=None, sin_visitas_desde=None, diagnostico=None,
-           droga=None, limit: int = 100) -> list[dict]:
+           droga=None, alta_entre=None, limit: int = 100) -> list[dict]:
     cond, args, motivos = [], [], []
     if contiene:
         cond.append("""p.consumer_id IN (SELECT r.consumer_id FROM records_fts f
@@ -244,6 +244,11 @@ def cohort(db, contiene=None, sin_visitas_desde=None, diagnostico=None,
         cond.append("""p.consumer_id IN (SELECT consumer_id FROM records
                        WHERE section='tratamientos' AND (drug LIKE ? OR label LIKE ?))""")
         args += [f"%{droga}%", f"%{droga}%"]; motivos.append(f"tratamiento {droga}")
+    if alta_entre:
+        desde, hasta = alta_entre
+        cond.append("p.created_at IS NOT NULL AND p.created_at BETWEEN ? AND ?")
+        args += [desde, hasta]
+        motivos.append(f"alta entre {desde} y {hasta}")
     if not cond:
         return []
     sql = ("SELECT consumer_id, full_name, dni, n_records, last_visit FROM patients p WHERE "

@@ -126,3 +126,43 @@ def test_fecha_invalida_no_rompe(tmp_path):
         _evo("records/1", "sin fecha", "<p>x</p>"),
     ])])
     assert get_patient(ruta, consumer_id="a1")["records"][0]["date"] is None
+
+
+# --- cohort: filtro alta_entre (fecha de alta del paciente en drapp) ---
+
+def _pf(cid, apellido, dni, alta, evos):
+    """Paciente con fecha de alta, para probar alta_entre."""
+    return PacienteCorpus(cid,
+        {"consumerId": cid, "lastName": apellido, "firstName": "X",
+         "dni": dni, "dob": "1980-01-01", "createdAt": alta},
+        {"evoluciones": evos})
+
+
+def test_cohort_alta_entre(tmp_path):
+    ruta = tmp_path / "i.db"
+    construir(ruta, [
+        _pf("a1", "Vieja", "111", "2021-03-15T10:00:00.000Z", []),
+        _pf("b2", "Nueva", "222", "2026-08-16T10:00:00.000Z", []),
+    ])
+    r = cohort(ruta, alta_entre=["2026-01-01", "2026-12-31"], limit=50)
+    assert [x["consumer_id"] for x in r] == ["b2"]
+    assert "alta entre" in r[0]["motivo"]
+
+
+def test_cohort_alta_entre_se_combina_con_otros_criterios(tmp_path):
+    ruta = tmp_path / "i.db"
+    construir(ruta, [
+        _pf("a1", "Uno", "111", "2026-02-01T00:00:00.000Z",
+            [_evo("records/1", "2026-02-02", "<p>inicia wegovy</p>")]),
+        _pf("b2", "Dos", "222", "2026-02-01T00:00:00.000Z",
+            [_evo("records/2", "2026-02-02", "<p>control anual</p>")]),
+    ])
+    r = cohort(ruta, contiene="wegovy", alta_entre=["2026-01-01", "2026-12-31"], limit=50)
+    assert [x["consumer_id"] for x in r] == ["a1"]
+
+
+def test_alta_en_formato_iso_se_normaliza(tmp_path):
+    ruta = tmp_path / "i.db"
+    construir(ruta, [_pf("a1", "Uno", "111", "2026-02-01T13:41:18.942Z", [])])
+    r = cohort(ruta, alta_entre=["2026-02-01", "2026-02-01"], limit=50)
+    assert len(r) == 1, "la fecha de alta con hora tiene que caer dentro de su propio dia"

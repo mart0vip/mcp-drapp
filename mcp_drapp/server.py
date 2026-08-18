@@ -7,7 +7,7 @@ import pathlib
 from mcp.server.mcpserver import MCPServer as FastMCP
 
 from . import auth, index
-from .api import secciones_de
+from .api import get, secciones_de
 from .corpus import cargar, diff
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -39,20 +39,71 @@ def status() -> dict:
 def refresh(mode: str = "nuevos", consumer_id: str | None = None) -> dict:
     """Re-baja la HCE desde drapp y reindexa. Informa que cambio.
 
-    mode: 'nuevos' compara contra el corpus; 'todos' vuelve a bajar todo.
+    mode:
+      'nuevos' (por defecto) consulta el contador de cada paciente (1 request
+      barato) y solo baja las 8 secciones de los que cambiaron, mas los que
+      todavia no estan en el corpus. Ojo: ese contador refleja evoluciones,
+      que son el 95% del contenido; un cambio que toque SOLO diagnosticos,
+      tratamientos o archivos puede no detectarse.
+      'todos' vuelve a bajar todo, sin excepcion. Es el modo exhaustivo.
+
+    consumer_id: limita la operacion a un unico paciente, ignorando `mode`.
+
+    La lista de pacientes sale de data/patients.json, asi que los pacientes
+    nuevos se descubren solos. El indice se reconstruye SIEMPRE al final,
+    incluso si alguna descarga fallo, para que no quede desincronizado del
+    corpus; las fallas se informan en la clave `errores`.
     """
     import json
+
     viejo = cargar(CORPUS)
-    objetivo = ([p for p in viejo if p.consumer_id == consumer_id] if consumer_id
-                else viejo)
-    for p in objetivo:
-        datos = secciones_de(p.consumer_id)
-        (CORPUS / f"{p.consumer_id}.json").write_text(
-            json.dumps({"patient": p.patient, "sections": datos},
+    por_id = {p.consumer_id: p for p in viejo}
+
+    lista_path = ROOT / "data" / "patients.json"
+    if lista_path.exists():
+        lista = json.loads(lista_path.read_text(encoding="utf-8"))
+    else:
+        lista = [{"consumerId": p.consumer_id, **p.patient} for p in viejo]
+
+    if consumer_id:
+        objetivo = [x for x in lista if x.get("consumerId") == consumer_id]
+    elif mode == "todos":
+        objetivo = lista
+    else:
+        objetivo = []
+        for x in lista:
+            cid = x.get("consumerId")
+            local = por_id.get(cid)
+            if local is None:
+                objetivo.append(x)          # paciente nuevo
+                continue
+            try:
+                st = get(f"consumers/{cid}/stats")
+            except Exception:
+                objetivo.append(x)          # ante la duda, bajar
+                continue
+            if st.get("records") != len(local.sections.get("evoluciones") or []):
+                objetivo.append(x)
+
+    errores = []
+    for x in objetivo:
+        cid = x.get("consumerId")
+        try:
+            datos = secciones_de(cid)
+        except Exception as e:
+            errores.append({"consumer_id": cid, "error": f"{type(e).__name__}: {e}"})
+            continue
+        ficha = dict(por_id[cid].patient) if cid in por_id else {}
+        ficha.update({k: v for k, v in x.items() if v})
+        (CORPUS / f"{cid}.json").write_text(
+            json.dumps({"patient": ficha, "sections": datos},
                        ensure_ascii=False, indent=1), encoding="utf-8")
+
     nuevo = cargar(CORPUS)
     d = diff(viejo, nuevo)
-    d.update(index.construir(DB, nuevo))
+    d["revisados"] = len(objetivo)
+    d["errores"] = errores
+    d.update(index.construir(DB, nuevo))    # siempre, aun con errores
     return d
 
 
@@ -84,9 +135,14 @@ def search_records(query: str, section: str = "evoluciones", desde: str | None =
 @mcp.tool()
 def cohort(contiene: str | None = None, sin_visitas_desde: str | None = None,
            diagnostico: str | None = None, droga: str | None = None,
-           limit: int = 100) -> list[dict]:
-    """Lista pacientes que cumplen criterios combinados con AND."""
-    return index.cohort(_db(), contiene, sin_visitas_desde, diagnostico, droga, limit)
+           alta_entre: list[str] | None = None, limit: int = 100) -> list[dict]:
+    """Lista pacientes que cumplen criterios combinados con AND.
+
+    alta_entre: [desde, hasta] en formato YYYY-MM-DD, sobre la fecha en que
+    el paciente fue dado de alta en drapp.
+    """
+    return index.cohort(_db(), contiene, sin_visitas_desde, diagnostico, droga,
+                        alta_entre, limit)
 
 
 @mcp.tool()
