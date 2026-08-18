@@ -4,7 +4,7 @@ import re
 
 
 def _celda(c: str) -> str:
-    c = re.sub(r"(?i)<br\s*/?>", " ", c)
+    c = re.sub(r"(?i)<br\b[^>]*>", " ", c)
     c = re.sub(r"(?is)<(b|strong)[^>]*>(.*?)</\1>", r"**\2**", c)
     c = re.sub(r"(?is)<(i|em)[^>]*>(.*?)</\1>", r"*\2*", c)
     c = re.sub(r"<[^>]+>", "", c)
@@ -41,7 +41,7 @@ def to_text(h: str | None) -> str:
         return f"\x00T{len(tablas) - 1}\x00"
 
     h = re.sub(r"(?is)<table[^>]*>.*?</table>", _stash, h)
-    h = re.sub(r"(?i)<br\s*/?>", "\n", h)
+    h = re.sub(r"(?i)<br\b[^>]*>", "\n", h)
     h = re.sub(r"(?i)</(p|div|h[1-6])>", "\n\n", h)
     h = re.sub(r"(?i)<li[^>]*>", "\n- ", h)
     h = re.sub(r"(?is)<(b|strong)[^>]*>(.*?)</\1>", r"**\2**", h)

@@ -35,3 +35,15 @@ def test_pipe_en_celda_se_escapa():
 def test_vacio():
     assert to_text("") == ""
     assert to_text(None) == ""
+
+
+def test_br_con_atributos_separa_igual():
+    """El corpus real trae <br data-start=... /> pegado desde ChatGPT: 276 evoluciones."""
+    assert to_text('<p>uno<br data-start="1" data-end="2" />dos</p>') == "uno\ndos"
+    assert to_text("<p>uno<br>dos</p>") == "uno\ndos"
+    assert to_text("<p>uno<br />dos</p>") == "uno\ndos"
+
+
+def test_br_con_atributos_en_celda():
+    out = to_text('<table><tr><td>a<br data-x="1" />b</td><td>c</td></tr></table>')
+    assert "| a b | c |" in out
