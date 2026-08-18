@@ -16,6 +16,15 @@ Reglas duras (spec seccion 6):
      1: el corpus real tenia HOMA=2024 y vitamina_d=2024 -- años colados
      como si fueran resultados -- y otros imposibles como hba1c=663 o
      peso=113900; ver test_ano_no_se_confunde_con_valor).
+  6. 'T4' suelto (sin 'L'/'libre') es dosis de levotiroxina en mcg, NO
+     resultado de T4 libre: se saco del patron de t4l, confirmado por la
+     medica (ronda de correccion 2, 2026-08-18). No se crea una serie de
+     dosis: un T4 suelto va a `revisar` como token no reconocido.
+  7. 'PA' sigue siendo peso por defecto (regla 3), salvo que el contexto
+     (mmHg, MAPA, "24 h", forma sistole/diastole) indique presion
+     arterial: en ese caso no se emite peso y el fragmento va a `revisar`.
+     No se agrega un analito de presion arterial, solo se excluye (ronda
+     de correccion 2, caso real: "Promedio de PA 24 h: 119/73 mmHg").
 """
 import re
 from dataclasses import dataclass
@@ -28,11 +37,16 @@ ANALITOS: dict[str, dict] = {
     "hba1c":            {"pat": [r"hba1c", r"hba2c", r"hemoglobina glicosilada", r"glicosilada"], "unit": "%", "rango": (3, 20)},
     "glucemia":         {"pat": [r"glucemia", r"gluc"],                    "unit": "mg/dL",   "rango": (20, 800)},
     "tsh":              {"pat": [r"tsh"],                                  "unit": "µUI/mL",  "rango": (0.001, 200)},
-    "t4l":              {"pat": [r"t4\s*l", r"t4\s*libre", r"t4"],         "unit": "ng/dL",   "rango": (0.1, 12)},
+    # 't4' solo (sin 'l'/'libre') se saco del patron: en el corpus real es
+    # dosis de levotiroxina en mcg (ej. "T4 100"), no resultado de T4 libre.
+    # Confirmado por la medica, ronda de correccion 2 (2026-08-18).
+    "t4l":              {"pat": [r"t4\s*l", r"t4\s*libre"],                "unit": "ng/dL",   "rango": (0.1, 12)},
     "ldl":              {"pat": [r"ldl(?:-c)?"],                           "unit": "mg/dL",   "rango": (10, 500)},
     "hdl":              {"pat": [r"hdl(?:-c)?"],                           "unit": "mg/dL",   "rango": (5, 200)},
     "colesterol_total": {"pat": [r"col\s*t(?:otal)?", r"colesterol total"], "unit": "mg/dL",  "rango": (50, 600)},
-    "trigliceridos":    {"pat": [r"trigliceridos", r"triglic[eé]ridos", r"tg"], "unit": "mg/dL", "rango": (20, 2000)},
+    # "tag" es sinonimo de trigliceridos en esta clinica (no es un analito
+    # nuevo), confirmado por la medica, ronda de correccion 2.
+    "trigliceridos":    {"pat": [r"trigliceridos", r"triglic[eé]ridos", r"tg", r"tag"], "unit": "mg/dL", "rango": (20, 2000)},
     "ferritina":        {"pat": [r"ferritina"],                            "unit": "ng/mL",   "rango": (1, 3000)},
     "insulina":         {"pat": [r"insulina"],                             "unit": "µU/mL",   "rango": (0.5, 400)},
     "homa":             {"pat": [r"homa(?:-ir)?"],                         "unit": "",        "rango": (0.1, 50)},
@@ -40,6 +54,10 @@ ANALITOS: dict[str, dict] = {
     "b12":              {"pat": [r"vitamina\s*b12", r"b12"],               "unit": "pg/mL",   "rango": (50, 3000)},
     "uricemia":         {"pat": [r"uricemia", r"uric"],                    "unit": "mg/dL",   "rango": (0.5, 20)},
     "shbg":             {"pat": [r"shbg"],                                 "unit": "nmol/L",  "rango": (1, 300)},
+    # tres analitos nuevos confirmados por la medica, ronda de correccion 2.
+    "hemoglobina":      {"pat": [r"hb", r"hemoglobina"],                   "unit": "g/dL",    "rango": (5, 20)},
+    "hematocrito":      {"pat": [r"hto", r"hematocrito"],                  "unit": "%",       "rango": (15, 60)},
+    "imc":              {"pat": [r"imc"],                                  "unit": "",        "rango": (12, 70)},
 }
 
 _NUM = r"(\d+(?:[.,]\d+)?)"
@@ -75,6 +93,19 @@ def _es_separador(celda: str) -> bool:
 
 def _es_fecha(celda: str) -> bool:
     return bool(_FECHA_HEADER.match(celda.strip()))
+
+
+# senales de que "PA" es presion arterial (MAPA), no peso: mmHg, MAPA,
+# "24 h"/"24h" (monitoreo de 24 horas), o forma sistole/diastole (119/73).
+# Regla PA=peso confirmada por la medica; esta es la unica excepcion que
+# ella confirmo (ronda de correccion 2, caso real del corpus: "Promedio de
+# PA 24 h: 119/73 mmHg"). No se agrega un analito de presion arterial: solo
+# se excluye, tal como pidio la medica.
+_SENAL_PRESION = re.compile(r"mmHg|MAPA|24\s*h\b|\b\d{2,3}\s*/\s*\d{2,3}\b", re.I)
+
+
+def _tiene_senal_presion(fragmento: str) -> bool:
+    return bool(_SENAL_PRESION.search(fragmento))
 
 
 def _en_rango(analito: str, valor: float) -> bool:
@@ -173,6 +204,13 @@ def _de_tablas(texto: str) -> tuple[list[Lab], set[tuple[int, int]], list[str]]:
                 continue
             for analito, pat in _orden_patrones():
                 if re.fullmatch(rf"\s*{pat}\s*", etiqueta, re.I):
+                    if analito == "peso" and pat == "PA" and _tiene_senal_presion(m.group(0)):
+                        # excepcion PA=peso: contexto de MAPA en la propia
+                        # fila (mmHg, 24h, sistole/diastole). No se emite
+                        # ningun Lab; la fila completa va a revisar.
+                        revisar.append(m.group(0).strip())
+                        spans.add(m.span())
+                        break
                     unidad = celdas[1][mv.end():].strip() or ANALITOS[analito]["unit"]
                     labs.append(Lab(analito, _num(mv.group(1)), unidad, "tabla", m.group(0).strip()))
                     spans.add(m.span())
@@ -191,8 +229,19 @@ def _de_texto(texto: str, excluir: set[tuple[int, int]]) -> tuple[list[Lab], lis
                 continue
             vistos.add(m.span())
             ini, fin = max(0, m.start() - 25), min(len(texto), m.end() + 25)
+            snippet = texto[ini:fin].strip()
+
+            if analito == "peso" and pat == "PA":
+                # excepcion PA=peso: si el contexto (ventana ~40 caracteres
+                # alrededor del match) tiene pinta de MAPA/presion arterial,
+                # no se adivina un peso; el fragmento va a revisar.
+                ventana = texto[max(0, m.start() - 40): min(len(texto), m.end() + 40)]
+                if _tiene_senal_presion(ventana):
+                    revisar.append(snippet)
+                    continue
+
             labs.append(Lab(analito, _num(m.group(1)), ANALITOS[analito]["unit"],
-                            "texto", texto[ini:fin].strip()))
+                            "texto", snippet))
 
     conocidos = {p for _, p in _orden_patrones()}
     for m in _CANDIDATO.finditer(texto):

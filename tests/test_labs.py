@@ -100,3 +100,39 @@ def test_valor_fuera_de_rango_va_a_revisar_con_snippet():
 def test_valor_dentro_de_rango_se_emite_normal():
     labs, _ = extract("hba1c 5.4")
     assert len(labs) == 1 and labs[0].value == 5.4
+
+
+def test_t4_solo_es_dosis_no_resultado():
+    """Confirmado por la medica: 'T4 100' son mcg de levotiroxina, no T4 libre."""
+    labs, revisar = extract("T4 100")
+    assert all(l.analyte != "t4l" for l in labs)
+
+
+def test_t4_libre_si_es_resultado():
+    for txt in ("T4L 1.3", "T4 libre 1.3", "t4 l 1.3"):
+        labs, _ = extract(txt)
+        assert any(l.analyte == "t4l" and l.value == 1.3 for l in labs), txt
+
+
+def test_PA_en_contexto_de_MAPA_no_es_peso():
+    """Excepcion real del corpus: en un MAPA, PA si es presion arterial."""
+    labs, _ = extract("Promedio de PA 24 h: 119/73 mmHg")
+    assert all(l.analyte != "peso" for l in labs)
+
+
+def test_PA_sigue_siendo_peso_en_contexto_normal():
+    labs, _ = extract("PA 108.6")
+    assert len(labs) == 1 and labs[0].analyte == "peso" and labs[0].value == 108.6
+
+
+def test_hb_no_pisa_hba1c():
+    labs, _ = extract("hba1c 5.4 - HB 13.4 - HTO 41.3")
+    por = {l.analyte: l.value for l in labs}
+    assert por["hba1c"] == 5.4
+    assert por["hemoglobina"] == 13.4
+    assert por["hematocrito"] == 41.3
+
+
+def test_tag_es_trigliceridos():
+    labs, _ = extract("TAG 197")
+    assert [l.analyte for l in labs] == ["trigliceridos"]
