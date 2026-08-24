@@ -7,7 +7,7 @@ import pathlib
 from mcp.server.mcpserver import MCPServer as FastMCP
 
 from . import auth, index
-from .api import get, secciones_de
+from .api import get, listar_consumers, secciones_de
 from .corpus import cargar, diff
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -49,8 +49,9 @@ def refresh(mode: str = "nuevos", consumer_id: str | None = None) -> dict:
 
     consumer_id: limita la operacion a un unico paciente, ignorando `mode`.
 
-    La lista de pacientes sale de data/patients.json, asi que los pacientes
-    nuevos se descubren solos. El indice se reconstruye SIEMPRE al final,
+    El padron se pide a drapp en cada corrida, asi que los pacientes dados de
+    alta desde la ultima vez aparecen solos: no hay que exportar el CSV a
+    mano. Si la red falla se usa la copia local y se avisa en `padron_al_dia`. El indice se reconstruye SIEMPRE al final,
     incluso si alguna descarga fallo, para que no quede desincronizado del
     corpus; las fallas se informan en la clave `errores`.
     """
@@ -59,11 +60,22 @@ def refresh(mode: str = "nuevos", consumer_id: str | None = None) -> dict:
     viejo = cargar(CORPUS)
     por_id = {p.consumer_id: p for p in viejo}
 
+    # El padron se pide a drapp: asi las altas nuevas se descubren solas y no
+    # hay que exportar el CSV a mano. Si la red falla se cae a la lista local,
+    # que puede estar vieja pero permite refrescar lo que ya se tiene.
     lista_path = ROOT / "data" / "patients.json"
-    if lista_path.exists():
-        lista = json.loads(lista_path.read_text(encoding="utf-8"))
-    else:
-        lista = [{"consumerId": p.consumer_id, **p.patient} for p in viejo]
+    padron_al_dia = True
+    try:
+        lista = listar_consumers()
+        lista_path.parent.mkdir(parents=True, exist_ok=True)
+        lista_path.write_text(json.dumps(lista, ensure_ascii=False, indent=1),
+                              encoding="utf-8")
+    except Exception:
+        padron_al_dia = False
+        if lista_path.exists():
+            lista = json.loads(lista_path.read_text(encoding="utf-8"))
+        else:
+            lista = [{"consumerId": p.consumer_id, **p.patient} for p in viejo]
 
     if consumer_id:
         objetivo = [x for x in lista if x.get("consumerId") == consumer_id]
@@ -102,6 +114,7 @@ def refresh(mode: str = "nuevos", consumer_id: str | None = None) -> dict:
     nuevo = cargar(CORPUS)
     d = diff(viejo, nuevo)
     d["revisados"] = len(objetivo)
+    d["padron_al_dia"] = padron_al_dia
     d["errores"] = errores
     d.update(index.construir(DB, nuevo))    # siempre, aun con errores
     return d

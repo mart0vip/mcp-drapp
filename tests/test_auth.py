@@ -30,7 +30,13 @@ def test_callback_es_localhost_3000():
 
 
 def test_sin_token_pide_login(monkeypatch):
+    """Sin credenciales guardadas hay que pedir login, no fallar de otro modo.
+
+    Se aisla tambien el access token compartido: desde que se comparte via
+    Llavero, un token real de la maquina haria pasar el test por casualidad.
+    """
     monkeypatch.setattr(auth, "_leer_llavero", lambda: None)
+    monkeypatch.setattr(auth, "_leer_acceso", lambda: None)
     monkeypatch.setattr(auth, "_TOKEN_MEM", None, raising=False)
     with pytest.raises(auth.NecesitaLogin):
         auth.access_token()

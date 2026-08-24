@@ -73,6 +73,9 @@ def test_refresh_usa_el_contador_para_saltear(monkeypatch, tmp_path):
 
     monkeypatch.setattr(server, "get", falso_get)
     monkeypatch.setattr(server, "secciones_de", falsas_secciones)
+    # el padron se pide a drapp; en el test se sirve local para no salir a la red
+    monkeypatch.setattr(server, "listar_consumers", lambda: [
+        {"consumerId": "igual"}, {"consumerId": "cambio"}])
 
     r = server.refresh(mode="nuevos")
 
@@ -99,8 +102,33 @@ def test_refresh_reindexa_aunque_falle_una_descarga(monkeypatch, tmp_path):
     def explota(cid):
         raise RuntimeError("HTTP 500")
     monkeypatch.setattr(server, "secciones_de", explota)
+    monkeypatch.setattr(server, "listar_consumers", lambda: [{"consumerId": "roto"}])
 
     r = server.refresh(mode="todos")
     assert len(r["errores"]) == 1
     assert "HTTP 500" in r["errores"][0]["error"]
     assert r["n_patients"] == 1, "el indice se reconstruyo igual"
+
+
+def test_refresh_avisa_si_no_pudo_traer_el_padron(monkeypatch, tmp_path):
+    """Si la enumeracion falla se usa la copia local y se avisa, en vez de
+    aparentar que el padron esta al dia."""
+    import json
+    corpus_dir = tmp_path / "hce"; corpus_dir.mkdir()
+    (corpus_dir / "uno.json").write_text(json.dumps({
+        "patient": {"consumerId": "uno", "firstName": "A", "lastName": "B",
+                    "dni": "1", "dob": "1990-01-01"},
+        "sections": {"evoluciones": []},
+    }), encoding="utf-8")
+    monkeypatch.setattr(server, "CORPUS", corpus_dir)
+    monkeypatch.setattr(server, "DB", tmp_path / "i.db")
+    monkeypatch.setattr(server, "ROOT", tmp_path)
+
+    def sin_red():
+        raise RuntimeError("sin conexion")
+    monkeypatch.setattr(server, "listar_consumers", sin_red)
+    monkeypatch.setattr(server, "secciones_de", lambda cid: {"evoluciones": []})
+
+    r = server.refresh(mode="todos")
+    assert r["padron_al_dia"] is False
+    assert r["n_patients"] == 1, "igual refresca lo que ya se tiene"
