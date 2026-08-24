@@ -8,13 +8,17 @@ Hallazgos de la prueba del 2026-08-18:
   - callback: solo http://localhost:3000 esta permitido
 """
 import base64
+import contextlib
+import fcntl
 import hashlib
 import http.server
 import json
+import pathlib
 import secrets
 import socket
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 import webbrowser
@@ -28,6 +32,16 @@ REDIRECT_URI = "http://localhost:3000"   # impuesto por drapp; no cambiar
 SCOPE = "openid profile email offline_access"
 SERVICIO = "drapp-mcp"
 _TOKEN_MEM: dict | None = None
+
+# Auth0 rota los refresh tokens: cada uno es de un solo uso y al renovar
+# emite uno nuevo, invalidando el anterior. Si dos procesos renuevan a la vez
+# (esta sesion y el servidor MCP, por ejemplo), el segundo presenta un token
+# ya rotado, Auth0 lo interpreta como reuso y REVOCA TODA LA FAMILIA por
+# seguridad -- la sesion muere con "invalid_grant" aunque nadie hizo nada mal.
+# Se evita en tres frentes: el access token se comparte entre procesos via
+# Llavero, la renovacion se serializa con un lock de archivo, y dentro del
+# lock el refresh token se relee del Llavero en vez de usar una copia vieja.
+_LOCK = pathlib.Path.home() / ".drapp-mcp-refresh.lock"
 
 
 class NecesitaLogin(RuntimeError):
@@ -50,6 +64,46 @@ def _leer_llavero() -> str | None:
 
 def _guardar_llavero(rt: str) -> None:
     keyring.set_password(SERVICIO, "refresh_token", rt)
+
+
+def _borrar_llavero() -> None:
+    """Borra las credenciales muertas para que el proximo intento no reintente
+    con un token ya revocado."""
+    for clave in ("refresh_token", "access_token"):
+        with contextlib.suppress(Exception):
+            keyring.delete_password(SERVICIO, clave)
+
+
+def _leer_acceso() -> dict | None:
+    """Access token compartido entre procesos. Vive en el Llavero, no en un
+    archivo: es un secreto igual que el refresh token."""
+    crudo = keyring.get_password(SERVICIO, "access_token")
+    if not crudo:
+        return None
+    try:
+        tok = json.loads(crudo)
+    except ValueError:
+        return None
+    return tok if tok.get("access_token") and tok.get("vence") else None
+
+
+def _guardar_acceso(tok: dict) -> None:
+    keyring.set_password(SERVICIO, "access_token", json.dumps(tok))
+
+
+@contextlib.contextmanager
+def _lock_renovacion():
+    """Serializa la renovacion entre procesos. Sin esto, dos procesos que
+    renuevan a la vez se revocan mutuamente la sesion."""
+    _LOCK.touch(exist_ok=True)
+    fh = _LOCK.open("r+")
+    try:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        yield
+    finally:
+        with contextlib.suppress(Exception):
+            fcntl.flock(fh, fcntl.LOCK_UN)
+        fh.close()
 
 
 def _post(path: str, datos: dict) -> dict:
@@ -113,6 +167,7 @@ def login(timeout: int = 300) -> dict:
         "code": recibido["code"], "redirect_uri": REDIRECT_URI,
         "code_verifier": verifier})
     _recordar(tok)
+    _guardar_acceso(_TOKEN_MEM)
     if tok.get("refresh_token"):
         _guardar_llavero(tok["refresh_token"])
     return {"expires_in": tok.get("expires_in"),
@@ -127,23 +182,62 @@ def _recordar(tok: dict) -> None:
                   "vence": time.time() + int(tok.get("expires_in", 3600)) - 60}
 
 
+def _vigente(tok: dict | None) -> bool:
+    return bool(tok) and time.time() < tok["vence"]
+
+
 def access_token() -> str:
-    """Token vigente. Renueva con el refresh token si hace falta."""
+    """Token de acceso vigente, renovando si hace falta.
+
+    Renovar es la operacion peligrosa (ver el comentario sobre rotacion arriba),
+    asi que se evita todo lo posible: primero la copia en memoria, despues la
+    compartida del Llavero, y solo entonces se renueva -- bajo lock y releyendo
+    el refresh token, para que dos procesos no se pisen.
+    """
     global _TOKEN_MEM
-    if _TOKEN_MEM and time.time() < _TOKEN_MEM["vence"]:
+    if _vigente(_TOKEN_MEM):
         return _TOKEN_MEM["access_token"]
-    rt = _leer_llavero()
-    if not rt:
-        raise NecesitaLogin("No hay sesion. Corre la herramienta 'login'.")
-    try:
-        tok = _post("/oauth/token", {"grant_type": "refresh_token",
-                                     "client_id": CLIENT_ID, "refresh_token": rt})
-    except Exception as e:
-        raise NecesitaLogin(f"No se pudo renovar la sesion ({e}). Corre 'login'.")
-    _recordar(tok)
-    if tok.get("refresh_token"):
-        _guardar_llavero(tok["refresh_token"])
-    return _TOKEN_MEM["access_token"]
+
+    compartido = _leer_acceso()
+    if _vigente(compartido):
+        _TOKEN_MEM = compartido
+        return _TOKEN_MEM["access_token"]
+
+    with _lock_renovacion():
+        # otro proceso pudo haber renovado mientras esperabamos el lock
+        compartido = _leer_acceso()
+        if _vigente(compartido):
+            _TOKEN_MEM = compartido
+            return _TOKEN_MEM["access_token"]
+
+        rt = _leer_llavero()          # siempre fresco, nunca una copia vieja
+        if not rt:
+            raise NecesitaLogin("No hay sesion. Corre la herramienta 'login'.")
+        try:
+            tok = _post("/oauth/token", {"grant_type": "refresh_token",
+                                         "client_id": CLIENT_ID,
+                                         "refresh_token": rt})
+        except urllib.error.HTTPError as e:
+            cuerpo = ""
+            with contextlib.suppress(Exception):
+                cuerpo = e.read().decode()
+            if e.code in (400, 403) and "invalid_grant" in cuerpo:
+                _borrar_llavero()
+                raise NecesitaLogin(
+                    "El refresh token ya no sirve: Auth0 lo revoco. Suele pasar "
+                    "cuando dos procesos renuevan a la vez. Corre 'login' una "
+                    "vez y queda resuelto.") from None
+            raise NecesitaLogin(
+                f"No se pudo renovar la sesion (HTTP {e.code}). Corre 'login'.") from None
+        except Exception as e:
+            raise NecesitaLogin(
+                f"No se pudo renovar la sesion ({type(e).__name__}). Corre 'login'.") from None
+
+        _recordar(tok)
+        _guardar_acceso(_TOKEN_MEM)
+        if tok.get("refresh_token"):
+            _guardar_llavero(tok["refresh_token"])
+        return _TOKEN_MEM["access_token"]
 
 
 def estado_token() -> dict:
