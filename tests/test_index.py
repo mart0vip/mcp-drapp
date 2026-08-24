@@ -166,3 +166,36 @@ def test_alta_en_formato_iso_se_normaliza(tmp_path):
     construir(ruta, [_pf("a1", "Uno", "111", "2026-02-01T13:41:18.942Z", [])])
     r = cohort(ruta, alta_entre=["2026-02-01", "2026-02-01"], limit=50)
     assert len(r) == 1, "la fecha de alta con hora tiene que caer dentro de su propio dia"
+
+
+# --- Adjuntos indexados y consultas con sintaxis FTS accidental ---
+
+def test_texto_de_adjunto_se_indexa_y_se_encuentra(tmp_path, monkeypatch):
+    """El contenido del adjunto (capa PDF u OCR) tiene que ser buscable, no
+    solo el nombre del archivo."""
+    from mcp_drapp import index as mod
+    monkeypatch.setattr(mod, "leer_texto",
+                        lambda cid, rid: "TIROTROFINA TSH 3,23 uUI/ml"
+                        if rid == "arch1" else "")
+    ruta = tmp_path / "i.db"
+    construir(ruta, [PacienteCorpus("a1",
+        {"consumerId": "a1", "lastName": "Uno", "firstName": "X",
+         "dni": "111", "dob": "1980-01-01"},
+        {"archivos": [{"id": "records/arch1", "date": "2026-05-07",
+                       "name": "lab.pdf", "createdAt": 1, "updatedAt": 1}]})])
+    r = search_records(ruta, "tirotrofina", section="archivos")
+    assert len(r) == 1 and r[0]["consumer_id"] == "a1"
+    assert search_records(ruta, "lab.pdf", section="archivos"), "el nombre tambien"
+
+
+def test_consulta_con_guion_no_rompe(db):
+    """`bi-rads`, `HOMA-IR`, `25-OH`: el guion es sintaxis en FTS5 y hacia
+    fallar la consulta con 'no such column'."""
+    for q in ("bi-rads", "HOMA-IR", "25-OH", "algo-inexistente-xyz"):
+        assert isinstance(search_records(db, q, section=None), list), q
+
+
+def test_sintaxis_fts_valida_sigue_funcionando(db):
+    """La tolerancia no debe romper las consultas bien formadas."""
+    assert isinstance(search_records(db, "wegovy OR hipotirodismo", section=None), list)
+    assert isinstance(search_records(db, '"seguimiento hipotirodismo"', section=None), list)

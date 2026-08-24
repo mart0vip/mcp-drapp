@@ -6,6 +6,7 @@ import sqlite3
 import unicodedata
 from datetime import datetime, timezone
 
+from .adjuntos import leer_texto
 from .corpus import PacienteCorpus, cargar
 from .html2text import to_text
 from .labs import extract
@@ -92,7 +93,16 @@ def construir(db: pathlib.Path, pacientes: list[PacienteCorpus]) -> dict:
             rid = r.get("id")
             if not rid:
                 continue
-            texto = to_text(r.get("content")) if sec == "evoluciones" else (r.get("label") or r.get("name") or "")
+            if sec == "evoluciones":
+                texto = to_text(r.get("content"))
+            elif sec == "archivos":
+                # el nombre del archivo mas su contenido extraido (capa de
+                # texto del PDF u OCR local), para que la busqueda lo alcance
+                partes = [r.get("name") or "", leer_texto(p.consumer_id,
+                                                          rid.split("/")[-1])]
+                texto = "\n".join(x for x in partes if x).strip()
+            else:
+                texto = r.get("label") or r.get("name") or ""
             crudo, unificado = _autor(r)
             # El mismo "id" puede repetirse entre secciones del mismo paciente
             # (una evolucion con archivo/diagnostico/tratamiento asociado
@@ -203,6 +213,18 @@ def get_patient(db, consumer_id=None, dni=None, sections=None,
     return _proc(db, {"patient": dict(p) if p else None, "records": rs})
 
 
+def _query_literal(query: str) -> str:
+    """Reescribe la consulta como frases entrecomilladas.
+
+    FTS5 trata `-`, `*`, `:` y las comillas como sintaxis, asi que terminos
+    clinicos corrientes -- `bi-rads`, `HOMA-IR`, `25-OH` -- hacen fallar la
+    consulta con un error incomprensible. Al entrecomillar cada palabra se
+    buscan como texto literal.
+    """
+    tokens = [t for t in re.split(r"\s+", query.strip()) if t]
+    return " ".join('"' + t.replace('"', '""') + '"' for t in tokens)
+
+
 def search_records(db, query: str, section: str = "evoluciones", desde=None,
                    hasta=None, author=None, limit: int = 30) -> list[dict]:
     sql = """SELECT r.record_id, r.consumer_id, p.full_name, r.date,
@@ -223,7 +245,16 @@ def search_records(db, query: str, section: str = "evoluciones", desde=None,
         sql += " AND r.author_norm LIKE ?"; args.append(f"%{author}%")
     sql += " ORDER BY bm25(records_fts) LIMIT ?"; args.append(limit)
     with _con(db) as c:
-        return [dict(r) for r in c.execute(sql, args)]
+        try:
+            return [dict(r) for r in c.execute(sql, args)]
+        except sqlite3.OperationalError:
+            # la consulta uso sintaxis FTS5 sin querer (un guion, un asterisco
+            # suelto): se reintenta buscando los terminos como texto literal
+            literal = _query_literal(query)
+            if not literal:
+                return []
+            args[0] = literal
+            return [dict(r) for r in c.execute(sql, args)]
 
 
 def cohort(db, contiene=None, sin_visitas_desde=None, diagnostico=None,
