@@ -11,8 +11,10 @@ regenerar en cualquier momento sin perder nada. Las consultas leen ese índice
 local: son instantáneas, no gastan token y funcionan sin internet. Las únicas
 dos herramientas que tocan la red son `login` y `refresh`.
 
-Corpus actual: 1569 pacientes, 4166 registros, de los cuales 3957 son
-evoluciones en texto libre.
+Corpus actual: 1575 pacientes, 4189 registros, de los cuales 3957 son
+evoluciones en texto libre y 175 son adjuntos (laboratorios en PDF, ecografías
+y fotos de laboratorios en papel). El texto de los adjuntos también se indexa:
+ver "Adjuntos" más abajo.
 
 ## Instalación
 
@@ -20,6 +22,20 @@ evoluciones en texto libre.
 python3 -m venv .venv
 .venv/bin/pip install -e ".[dev]"
 ```
+
+Para armar el corpus desde cero, después de iniciar sesión:
+
+```bash
+.venv/bin/python scripts/fetch_hce.py            # historias (15-25 min)
+.venv/bin/python scripts/bajar_adjuntos.py       # adjuntos (~155 MB)
+.venv/bin/python scripts/extraer_texto_adjuntos.py
+```
+
+El padrón se le pide a drapp, así que no hace falta exportar ningún CSV.
+`scripts/importar_csv.py` queda como respaldo para instalar sin sesión, a
+partir del export de Reportes → Pacientes.
+
+Guía paso a paso para alguien que no programa: [INSTALL.md](INSTALL.md).
 
 ## Iniciar sesión
 
@@ -79,24 +95,37 @@ Frescura del corpus + estado de la sesión.
 ```
 $ .venv/bin/python -c "from mcp_drapp import server; import json; print(json.dumps(server.status(), ensure_ascii=False, indent=2))"
 {
-  "n_patients": 1569,
-  "n_records": 4166,
-  "last_refresh": "2026-08-18T18:39:18.618643+00:00",
-  "dias_desde_refresh": 0,
+  "n_patients": 1575,
+  "n_records": 4189,
+  "last_refresh": "2026-08-24T04:11:49.814516+00:00",
+  "dias_desde_refresh": 1,
   "schema_version": "1",
   "advertencia": null,
-  "sesion": {"sesion": "ausente", "detalle": "No hay sesion. Corre la herramienta 'login'."}
+  "sesion": {
+    "sesion": "activa",
+    "vence_en_seg": 86340
+  }
 }
 ```
 
 ### `refresh(mode="nuevos", consumer_id=None)`
-Re-baja la HCE desde drapp (todo el corpus, o un paciente puntual con
-`consumer_id`) y reindexa. Devuelve el diff (`pacientes_nuevos`,
-`registros_nuevos`, `registros_modificados`) más los conteos del reindexado.
-Sin sesión activa corta con `NecesitaLogin` (ver ejemplo arriba). Reindexar
-solo, sin bajar nada, es lo que hace `_db()` automáticamente si borrás
-`data/index.db` — tarda unos 3 segundos sobre el corpus completo (medido en
-esta máquina: 1569 pacientes / 4166 registros / 8755 labs).
+Re-baja la HCE desde drapp y reindexa. Devuelve el diff (`pacientes_nuevos`,
+`registros_nuevos`, `registros_modificados`), `padron_al_dia`, `errores` y los
+conteos del reindexado.
+
+`mode="nuevos"` (default) consulta el contador de cada paciente —un request
+barato— y sólo baja las 8 secciones de los que cambiaron. Ese contador refleja
+**evoluciones**: un cambio que toque sólo diagnósticos o tratamientos puede no
+detectarse. `mode="todos"` es el exhaustivo. Unos 5 minutos sobre el padrón
+completo.
+
+El padrón se le pide a drapp en cada corrida, así que los pacientes dados de
+alta desde la última vez **aparecen solos**. Si la red falla se usa la copia
+local y se avisa con `padron_al_dia: false`, en vez de aparentar estar al día.
+
+El índice se reconstruye siempre al final, aun si alguna descarga falló, para
+que no quede desincronizado del corpus. Reindexar solo tarda unos 3 segundos
+(1575 pacientes / 4189 registros / 8440 labs).
 
 ### `find_patient(query, limit=20)`
 Busca por nombre, DNI, email o teléfono.
@@ -150,9 +179,11 @@ Cada resultado trae `record_id`, `consumer_id`, `date`, `author`, `section` y
 un `snippet` resaltado del fragmento que matcheó. Anduvo entre 2 y 50 ms en
 las corridas de prueba, según la query.
 
-### `cohort(contiene=None, sin_visitas_desde=None, diagnostico=None, droga=None, limit=100)`
+### `cohort(contiene=None, sin_visitas_desde=None, diagnostico=None, droga=None, alta_entre=None, limit=100)`
 Pacientes que cumplen criterios combinados con AND (mención de texto libre,
-inactividad, diagnóstico, droga en tratamiento).
+inactividad, diagnóstico, droga en tratamiento, fecha de alta). `alta_entre`
+toma `[desde, hasta]` en formato `YYYY-MM-DD` sobre la fecha en que el paciente
+fue dado de alta en drapp.
 ```
 $ .venv/bin/python -c "from mcp_drapp import server; print(len(server.cohort(sin_visitas_desde='2025-06-01', limit=2000)))"
 980
@@ -183,12 +214,19 @@ advertencias abajo).
 
 ## Advertencias importantes
 
-**El servidor es de solo lectura por diseño, no por configuración.**
-`mcp_drapp/api.py` sólo implementa `get()`; no existe ninguna función que
-escriba en drapp (ni `post`, `put`, `patch` ni `delete`). No es un flag que
-se pueda prender: la capacidad de escritura no está implementada en el
-código. `tests/test_api.py` lo verifica inspeccionando el módulo y buscando
-esos verbos en el código fuente.
+**El servidor no puede modificar nada en drapp.** `mcp_drapp/api.py` resuelve
+casi todo con `get()`. La única excepción es `buscar()`, que hace `POST` porque
+drapp no ofrece otra forma de enumerar el padrón: el listado se pide con un
+body. Esa función valida la ruta contra `POST_PERMITIDOS`, una lista blanca que
+hoy tiene un solo elemento (`search/consumers`), y rechaza cualquier otra. **No
+existe código capaz de hacer `PUT`, `PATCH` ni `DELETE`.** `tests/test_api.py`
+lo verifica en tres frentes: que la lista blanca sea exactamente la declarada,
+que no haya otros verbos en el código fuente, y que un `POST` fuera de la lista
+levante excepción.
+
+Fue una decisión deliberada, tomada sabiendo el costo: la garantía pasó de "es
+imposible hacer POST" a "el único POST posible es a esta ruta de búsqueda, y
+está verificado".
 
 **`PA` significa "peso actual" en kg**, en la notación de esta clínica — no
 presión arterial. La única excepción es el contexto de MAPA (monitoreo
@@ -201,12 +239,33 @@ fragmento va al bucket `revisar` en vez de inventar un valor. Ver
 tabla de laboratorio estructurada. Cada valor trae su `snippet` original en
 la respuesta de `lab_series`: hay que confirmarlo contra ese fragmento antes
 de usarlo clínicamente, la extracción por regex puede errar. La cobertura
-medida contra el corpus real es de alrededor del 43% de las evoluciones (1708
-de 3957 tienen al menos un valor extraído) — y `lab_series` devuelve su
+medida contra el corpus real es de alrededor del 46% de las evoluciones (1688
+de 3697 tienen al menos un valor extraído) — y `lab_series` devuelve su
 propia cobertura (`evoluciones_totales` / `con_labs`) junto con la serie,
 justamente porque la ausencia de un valor en la serie **no** significa que el
 valor haya sido normal: puede ser que nunca se haya escrito, o que se haya
 escrito de una forma que el extractor no reconoce.
+
+## Adjuntos
+
+Las historias traen 175 archivos adjuntos: 140 PDFs (la mitad, laboratorios),
+31 fotos de WhatsApp que son laboratorios en papel, y algunas imágenes más.
+`scripts/bajar_adjuntos.py` los baja a `data/adjuntos/` y
+`scripts/extraer_texto_adjuntos.py` les extrae el texto a
+`data/adjuntos_texto/`, usando la capa de texto del PDF cuando existe (122
+archivos) y **OCR cuando no** (48). El OCR usa el framework Vision de Apple y
+**corre entero en la máquina**: ningún documento clínico sale a un servicio
+externo.
+
+Ese texto se indexa junto al nombre del archivo en la sección `archivos`, así
+que `search_records(..., section="archivos")` o `section=None` lo alcanzan.
+Buscar "tirotrofina" pasa de 3 resultados a 64: casi nunca se escribe en una
+evolución, pero está en 61 laboratorios adjuntos.
+
+Un dato sobre drapp, no sobre esta herramienta: **los adjuntos viven en un CDN
+público**. Se descargan sin token; cualquiera con el link accede al laboratorio
+del paciente. Las URLs son difíciles de adivinar, pero eso es oscuridad, no
+control de acceso.
 
 ## Privacidad
 

@@ -3,7 +3,14 @@ name = "mcp-drapp"
 version = "0.1.0"
 description = "Servidor MCP de solo lectura sobre la HCE de drapp.la"
 requires-python = ">=3.11"
-dependencies = ["mcp>=1.2.0", "keyring>=25.0"]
+dependencies = [
+  "mcp>=1.2.0",
+  "keyring>=25.0",
+  # texto de los adjuntos: capa de PDF y OCR local con Vision de Apple
+  "pypdf>=5.0",
+  "pyobjc-framework-Vision>=10.0",
+  "pyobjc-framework-Quartz>=10.0",
+]
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "pytest-asyncio>=0.24"]
