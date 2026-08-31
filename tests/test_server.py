@@ -3,10 +3,11 @@ from mcp_drapp import server
 
 
 @pytest.mark.asyncio
-async def test_expone_las_ocho_herramientas():
+async def test_expone_las_nueve_herramientas():
     nombres = {t.name for t in await server.mcp.list_tools()}
     assert nombres == {"login", "status", "refresh", "find_patient",
-                       "get_patient", "search_records", "cohort", "lab_series"}
+                       "get_patient", "search_records", "cohort", "lab_series",
+                       "agenda"}
 
 
 @pytest.mark.asyncio
@@ -132,3 +133,59 @@ def test_refresh_avisa_si_no_pudo_traer_el_padron(monkeypatch, tmp_path):
     r = server.refresh(mode="todos")
     assert r["padron_al_dia"] is False
     assert r["n_patients"] == 1, "igual refresca lo que ya se tiene"
+
+
+# --- agenda ------------------------------------------------------------
+
+def test_agenda_sin_argumentos_pide_el_dia_de_hoy(monkeypatch):
+    import datetime
+    visto = {}
+    monkeypatch.setattr(server._agenda, "consultar",
+                        lambda *a: visto.update(args=a) or {"total": 0})
+    server.agenda()
+    hoy = datetime.date.today().isoformat()
+    assert visto["args"][0] == hoy and visto["args"][1] == hoy
+
+
+def test_agenda_con_desde_solo_devuelve_ese_dia(monkeypatch):
+    visto = {}
+    monkeypatch.setattr(server._agenda, "consultar",
+                        lambda *a: visto.update(args=a) or {"total": 0})
+    server.agenda(desde="2026-09-15")
+    assert visto["args"][:2] == ("2026-09-15", "2026-09-15")
+
+
+def test_agenda_excluye_cancelados_y_bloqueos_por_defecto(monkeypatch):
+    visto = {}
+    monkeypatch.setattr(server._agenda, "consultar",
+                        lambda *a: visto.update(args=a) or {"total": 0})
+    server.agenda(desde="2026-09-15", hasta="2026-09-16")
+    assert visto["args"][3] is False and visto["args"][4] is False
+
+
+# --- la ficha tiene que seguir andando sin conexion --------------------
+
+def test_sin_sesion_la_ficha_se_devuelve_igual(monkeypatch):
+    from mcp_drapp.auth import NecesitaLogin
+
+    def cae(cid):
+        raise NecesitaLogin("vencio")
+
+    monkeypatch.setattr(server._agenda, "de_paciente", cae)
+    r = server._turnos_de("c1")
+    assert "login" in r["no_disponible"].lower()
+
+
+def test_sin_internet_la_ficha_se_devuelve_igual(monkeypatch):
+    def cae(cid):
+        raise RuntimeError("Fallo tras 3 intentos: timeout")
+
+    monkeypatch.setattr(server._agenda, "de_paciente", cae)
+    r = server._turnos_de("c1")
+    assert "no se pudo consultar la agenda" in r["no_disponible"].lower()
+
+
+def test_los_turnos_se_pueden_apagar(monkeypatch):
+    import inspect
+    firma = inspect.signature(server.get_patient)
+    assert firma.parameters["incluir_turnos"].default is True

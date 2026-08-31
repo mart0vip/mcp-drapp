@@ -4,12 +4,12 @@ La regla del proyecto es que este cliente no puede modificar nada en drapp:
 son historias clinicas reales y cualquier escritura quedaria firmada con la
 matricula de la profesional.
 
-Casi todo se resuelve con get(). La unica excepcion es buscar(), que hace
-POST porque drapp no ofrece otra forma de enumerar el padron de pacientes:
-el listado se pide con un body. Para que la excepcion no se convierta en una
-puerta abierta, buscar() solo acepta rutas de la lista blanca POST_PERMITIDOS
--- hoy una sola, la de busqueda -- y rechaza cualquier otra. No existe codigo
-capaz de hacer PUT, PATCH ni DELETE.
+Casi todo se resuelve con get(). Las excepciones pasan por buscar(), que
+hace POST porque drapp no ofrece esos listados por GET: se piden con un body.
+Son dos y las dos son consultas -- el padron de pacientes y la agenda de
+turnos. Para que la excepcion no se convierta en una puerta abierta, buscar()
+solo acepta rutas de la lista blanca POST_PERMITIDOS y rechaza cualquier
+otra. No existe codigo capaz de hacer PUT, PATCH ni DELETE.
 
 tests/test_api.py verifica las tres cosas: que la lista blanca sea la
 declarada, que no haya otros verbos, y que un POST fuera de la lista falle.
@@ -28,7 +28,7 @@ BASE = f"https://api.drapp.la/teams/{TEAM}"
 # Unicas rutas a las que se permite POST. Son consultas: devuelven datos y no
 # modifican nada. Agregar una entrada aca es una decision de diseno, no un
 # detalle -- cada ruta nueva debilita la garantia de solo lectura.
-POST_PERMITIDOS = frozenset({"search/consumers"})
+POST_PERMITIDOS = frozenset({"search/consumers", "events/query"})
 
 SECCIONES = {
     "evoluciones": "records/_all", "diagnosticos": "diagnostics",
@@ -96,6 +96,23 @@ def buscar(path: str, body: dict, reintentos: int = 3):
         except Exception as e:
             ultimo = str(e); time.sleep(1.5 * intento)
     raise RuntimeError(f"Fallo tras {reintentos} intentos: {ultimo}")
+
+
+def eventos_de(consumer_id: str) -> dict:
+    """Turnos de un paciente. Devuelve {"next": [...], "past": [...]}."""
+    return get(f"consumers/{consumer_id}/events")
+
+
+def consultar_eventos(desde_ms: int, hasta_ms: int) -> list[dict]:
+    """Eventos del equipo en una ventana de tiempo, en epoch milisegundos.
+
+    Pide cancelados y ausentes explicitamente: sin esos flags el servidor los
+    esconde. Filtrar es responsabilidad de agenda.py, para que el resultado
+    no dependa de un default del servidor que no controlamos.
+    """
+    salida = buscar("events/query", {"cancelled": True, "noshow": True,
+                                     "startsAt": desde_ms, "endsAt": hasta_ms})
+    return salida if isinstance(salida, list) else []
 
 
 def _iso(v) -> str:

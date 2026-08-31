@@ -48,7 +48,7 @@ Comprobá que quedó bien:
 .venv/bin/pytest -q
 ```
 
-Tenés que ver `108 passed`. Si ves errores, algo falló en la instalación.
+Tenés que ver `137 passed`. Si ves errores, algo falló en la instalación.
 
 ---
 
@@ -105,10 +105,10 @@ Comprobá que el servidor arranca:
 .venv/bin/python -c "import asyncio; from mcp_drapp.server import mcp; print(sorted(t.name for t in asyncio.run(mcp.list_tools())))"
 ```
 
-Tenés que ver las 8 herramientas:
+Tenés que ver las 9 herramientas:
 
 ```
-['cohort', 'find_patient', 'get_patient', 'lab_series', 'login', 'refresh', 'search_records', 'status']
+['agenda', 'cohort', 'find_patient', 'get_patient', 'lab_series', 'login', 'refresh', 'search_records', 'status']
 ```
 
 ---
@@ -139,6 +139,27 @@ Por defecto la búsqueda mira solo las evoluciones, para que los resultados no s
 >
 > *"Buscá hemograma en todo, evoluciones y archivos"*
 
+### La agenda
+
+Los turnos se consultan en vivo contra drapp, así que este es el único bloque
+que necesita internet y sesión activa.
+
+> *"¿Qué turnos hay hoy?"*
+>
+> *"Mostrame la agenda de la semana que viene"*
+>
+> *"¿Cuántos turnos tiene Anselmi el jueves?"*
+
+Al pedir la historia de un paciente ya te dice cuándo vuelve y cuándo vino por
+última vez, sin que lo pidas.
+
+> *"Traeme la historia de Fulano y decime cuándo tiene el próximo turno"*
+
+Por defecto no muestra los cancelados ni los bloqueos de agenda. Si los
+querés, pedilos:
+
+> *"Mostrame los turnos de mañana incluyendo los cancelados"*
+
 ### Cohortes y gestión
 
 > *"¿Cuántos pacientes no vienen desde enero de 2025?"*
@@ -165,7 +186,7 @@ Por defecto la búsqueda mira solo las evoluciones, para que los resultados no s
 
 ### 1. El servidor casi no puede escribir en drapp
 
-El cliente HTTP solo hace `GET`, con una única excepción: un `POST` a la ruta de búsqueda del padrón, porque drapp no ofrece otra forma de listar los pacientes. Esa ruta está en una lista blanca de un solo elemento y **no existe código capaz de hacer `PUT`, `PATCH` ni `DELETE`**. Hay tests que lo verifican. Es imposible que Claude te modifique una historia clínica.
+El cliente HTTP solo hace `GET`, con dos excepciones, y las dos son consultas que drapp no expone de otra forma: la búsqueda del padrón de pacientes y la de la agenda de turnos (la misma llamada que hace la web al abrir el calendario). Están en una lista blanca de dos elementos y **no existe código capaz de hacer `PUT`, `PATCH` ni `DELETE`**. Hay tests que lo verifican, incluido uno que falla si alguien amplía esa lista sin querer. Es imposible que Claude te modifique una historia clínica o te toque un turno.
 
 ### 2. `PA` significa peso actual, no presión arterial
 
@@ -204,6 +225,7 @@ Ejemplo de lo que evita: una tabla que compara dos fechas en columnas distintas 
 | Las consultas no encuentran nada | Faltó el paso 4. Verificá con `ls data/hce \| wc -l` |
 | La búsqueda no ve los adjuntos | Faltó el paso 5. |
 | Los datos están viejos | Pedile a Claude que actualice el corpus. |
+| La agenda dice "no disponible" | Es lo único que necesita internet y sesión. Repetí el paso 3. |
 | Empezar de cero | Borrá `data/index.db`: se reconstruye solo en la próxima consulta. |
 
-Las consultas funcionan **sin conexión y sin sesión**: leen la copia local. Solo `login` y `refresh` necesitan internet.
+Las consultas clínicas funcionan **sin conexión y sin sesión**: leen la copia local. Necesitan internet `login`, `refresh` y `agenda` — los turnos son dato vivo. Si `get_patient` no puede alcanzar la agenda, te devuelve la historia igual y te avisa que faltaron los turnos.

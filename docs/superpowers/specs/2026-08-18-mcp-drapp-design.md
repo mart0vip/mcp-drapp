@@ -22,9 +22,15 @@ Hoy el corpus existe (1569 pacientes, 4166 registros) pero solo como archivos su
 ### Fuera de alcance
 
 - Escribir en drapp (crear o editar evoluciones, diagnósticos, tratamientos, recetas)
-- Descargar los adjuntos binarios de la sección Archivos (se indexa la metadata y el link)
-- Turnos y agenda
 - Multi-equipo: el diseño asume el equipo `48b19010`
+
+### Alcance ampliado después del diseño
+
+- **Adjuntos** (2026-08-30): se descargan y se les extrae el texto con OCR local.
+- **Turnos y agenda** (2026-08-30): estaban fuera de alcance. Se agregaron con
+  la herramienta `agenda` y los turnos dentro de `get_patient`. Requirió una
+  segunda entrada en `POST_PERMITIDOS` (`events/query`), autorizada por el
+  usuario, porque drapp no expone la agenda del equipo por `GET`.
 
 ---
 

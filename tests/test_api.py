@@ -22,10 +22,16 @@ def test_no_existen_verbos_de_modificacion():
 
 
 def test_la_lista_blanca_de_post_es_exactamente_la_declarada():
-    """El unico POST permitido es la busqueda del padron, que drapp no expone
-    por GET. Agregar una ruta aca debilita la garantia de solo lectura: si
-    este test falla, fue una decision deliberada o un descuido."""
-    assert set(api.POST_PERMITIDOS) == {"search/consumers"}
+    """Los POST permitidos son consultas que drapp no expone por GET.
+
+    Agregar una ruta aca debilita la garantia de solo lectura: si este test
+    falla, fue una decision deliberada o un descuido.
+
+    - search/consumers: el padron de pacientes.
+    - events/query: la agenda de turnos. Es la misma llamada que hace la app
+      web al abrir el calendario; autorizada por el usuario el 2026-08-30.
+    """
+    assert set(api.POST_PERMITIDOS) == {"search/consumers", "events/query"}
 
 
 def test_buscar_rechaza_rutas_fuera_de_la_lista_blanca():

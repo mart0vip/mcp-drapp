@@ -2,12 +2,15 @@
 
 Traduce entre el protocolo MCP y los modulos; no contiene logica de negocio.
 """
+import datetime
 import pathlib
 
 from mcp.server.mcpserver import MCPServer as FastMCP
 
+from . import agenda as _agenda
 from . import auth, index
 from .api import get, listar_consumers, secciones_de
+from .auth import NecesitaLogin
 from .corpus import cargar, diff
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -129,9 +132,28 @@ def find_patient(query: str, limit: int = 20) -> list[dict]:
 @mcp.tool()
 def get_patient(consumer_id: str | None = None, dni: str | None = None,
                 sections: list[str] | None = None, desde: str | None = None,
-                hasta: str | None = None, limit: int = 50) -> dict:
-    """Historia clinica de un paciente, en orden cronologico."""
-    return index.get_patient(_db(), consumer_id, dni, sections, desde, hasta, limit)
+                hasta: str | None = None, limit: int = 50,
+                incluir_turnos: bool = True) -> dict:
+    """Historia clinica de un paciente, en orden cronologico.
+
+    Agrega 'turnos' con el proximo y el ultimo, para preparar la consulta. Es
+    el unico dato que sale a la red: si no hay sesion o no hay internet, la
+    ficha se devuelve igual y 'turnos' explica por que falta.
+    """
+    r = index.get_patient(_db(), consumer_id, dni, sections, desde, hasta, limit)
+    if incluir_turnos and r.get("patient"):
+        r["turnos"] = _turnos_de(r["patient"]["consumer_id"])
+    return r
+
+
+def _turnos_de(cid: str) -> dict:
+    """Turnos de un paciente, tolerando que la red no este disponible."""
+    try:
+        return _agenda.de_paciente(cid)
+    except NecesitaLogin:
+        return {"no_disponible": "Sin sesion en drapp. Corre 'login'."}
+    except Exception as e:
+        return {"no_disponible": f"No se pudo consultar la agenda: {e}"}
 
 
 @mcp.tool()
@@ -169,6 +191,26 @@ def lab_series(consumer_id: str | None = None, dni: str | None = None,
     a mano: verificalos contra el snippet antes de usarlos clinicamente.
     """
     return index.lab_series(_db(), consumer_id, dni, analitos, desde, hasta)
+
+
+@mcp.tool()
+def agenda(desde: str | None = None, hasta: str | None = None,
+           profesional: str | None = None, incluir_cancelados: bool = False,
+           incluir_bloqueos: bool = False) -> dict:
+    """Turnos del equipo entre dos fechas (YYYY-MM-DD), ambas inclusive.
+
+    Sin argumentos devuelve los de hoy; con 'desde' solo, ese dia. A
+    diferencia del resto de las herramientas, esta consulta drapp en vivo:
+    necesita sesion e internet.
+
+    Por defecto muestra solo turnos vigentes: quedan afuera los cancelados,
+    los ausentes y los bloqueos de agenda (horas cerradas, que la API
+    devuelve mezcladas con los turnos).
+    """
+    hoy = datetime.date.today().isoformat()
+    desde = desde or hoy
+    return _agenda.consultar(desde, hasta or desde, profesional,
+                             incluir_cancelados, incluir_bloqueos)
 
 
 def main() -> None:

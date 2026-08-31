@@ -8,8 +8,11 @@ cliente MCP) sin pasar por la web de drapp.
 El corpus local vive en `data/hce/` (un JSON por paciente, fuente de verdad) y
 se indexa en `data/index.db`, un SQLite con FTS5 que se puede borrar y
 regenerar en cualquier momento sin perder nada. Las consultas leen ese índice
-local: son instantáneas, no gastan token y funcionan sin internet. Las únicas
-dos herramientas que tocan la red son `login` y `refresh`.
+local: son instantáneas, no gastan token y funcionan sin internet. Las
+herramientas que tocan la red son `login`, `refresh` y `agenda` — esta última
+porque los turnos son dato vivo y no tendría sentido indexarlos. `get_patient`
+le suma los turnos del paciente y por eso también sale a la red, pero si no
+hay sesión o no hay internet devuelve la ficha igual y avisa qué faltó.
 
 Corpus actual: 1575 pacientes, 4189 registros, de los cuales 3957 son
 evoluciones en texto libre y 175 son adjuntos (laboratorios en PDF, ecografías
@@ -73,7 +76,7 @@ except Exception as e:
 NecesitaLogin: No hay sesion. Corre la herramienta 'login'.
 ```
 
-## Las 8 herramientas
+## Las 9 herramientas
 
 En todos los ejemplos de abajo se reemplazaron nombre, DNI y fecha de
 nacimiento reales por placeholders — son corridas reales contra el corpus de
@@ -151,9 +154,15 @@ $ .venv/bin/python -c "from mcp_drapp import server; import json; print(json.dum
 ]
 ```
 
-### `get_patient(consumer_id=None, dni=None, sections=None, desde=None, hasta=None, limit=50)`
+### `get_patient(consumer_id=None, dni=None, sections=None, desde=None, hasta=None, limit=50, incluir_turnos=True)`
 Historia clínica completa (o filtrada por sección/fecha), en orden
-cronológico.
+cronológico, más los turnos del paciente para preparar la consulta: `proximo`,
+`ultimo`, y las listas completas `futuros` y `pasados`.
+
+Los turnos son la única parte que sale a la red. Si no hay sesión o no hay
+internet, la ficha se devuelve igual y `turnos` trae un `no_disponible` que
+explica por qué. Con `incluir_turnos=False` no se consulta nada y la
+herramienta vuelve a funcionar 100% offline.
 ```
 $ .venv/bin/python -c "from mcp_drapp import server; import json; print(json.dumps(server.get_patient(consumer_id='96b77748', sections=['evoluciones'], limit=1), ensure_ascii=False, indent=2))"
 {
@@ -164,9 +173,60 @@ $ .venv/bin/python -c "from mcp_drapp import server; import json; print(json.dum
     {"record_id": "records/311d1d38", "section": "evoluciones", "date": null,
      "author": "Anselmi, María Eugenia", "text": "(texto clínico real, omitido acá)"}
   ],
-  "corpus": {"last_refresh": "2026-08-18T18:39:18...", "dias_desde_refresh": 0, "advertencia": null}
+  "corpus": {"last_refresh": "2026-08-18T18:39:18...", "dias_desde_refresh": 0, "advertencia": null},
+  "turnos": {
+    "proximo": {"fecha": "2026-09-15", "hora": "10:20", "estado": "reservado",
+                "profesional": "Acosta, Veronica", "...": "..."},
+    "ultimo":  {"fecha": "2026-08-28", "hora": "17:00", "estado": "activo",
+                "profesional": "Anselmi, MARIA EUGENIA", "...": "..."},
+    "futuros": ["..."], "pasados": ["..."]
+  }
 }
 ```
+
+### `agenda(desde=None, hasta=None, profesional=None, incluir_cancelados=False, incluir_bloqueos=False)`
+Turnos del equipo entre dos fechas (`YYYY-MM-DD`), ambas inclusive. Sin
+argumentos, los de hoy; con `desde` solo, ese día. **Consulta drapp en vivo:
+necesita sesión e internet.**
+
+Por defecto muestra solo turnos vigentes. Quedan afuera tres cosas distintas:
+los cancelados, los ausentes (`noshow`) y los **bloqueos de agenda** — horas
+que la profesional cerró, que la API devuelve mezcladas con los turnos bajo
+`type: "lock"` y que no tienen paciente ni servicio. El campo
+`descartados_no_turno` dice cuántos bloqueos había en la ventana.
+
+```
+$ .venv/bin/python -c "from mcp_drapp import server; import json; print(json.dumps(server.agenda(desde='2026-08-31', hasta='2026-09-05'), ensure_ascii=False, indent=2))"
+{
+  "desde": "2026-08-31", "hasta": "2026-09-05",
+  "total": 19,
+  "por_dia": {"2026-08-31": 6, "2026-09-03": 11, "2026-09-04": 2},
+  "descartados_no_turno": 18,
+  "descartados_fuera_de_rango": 14,
+  "turnos": [
+    {"event_id": "6a9195794d6f93a9", "fecha": "2026-08-31", "hora": "09:00",
+     "duracion_min": 30, "estado": "reservado", "estado_crudo": "booked",
+     "vigente": true, "profesional": "Anselmi, MARIA EUGENIA",
+     "servicio": "Endocrinología Adultos / Consulta", "remoto": false,
+     "paciente": {"consumer_id": "c1...", "nombre": "Apellido, Nombre",
+                  "dni": "XXXXXXXX", "telefono": "+54 9 ..."}}
+  ]
+}
+```
+
+**El rango se recorta acá, no en drapp.** La ventana `startsAt`/`endsAt` del
+endpoint filtra por fecha **UTC**, así que desde Argentina (UTC−3) el fin del
+día local cae en el día siguiente en UTC y el servidor devuelve turnos de más:
+pedir el 30/8 devolvía los 12 eventos del 31/8, y la herramienta habría dicho
+"tenés 6 turnos hoy" cuando el 30/8 era domingo y no había ninguno. Por eso se
+pide un día de margen a cada lado y el recorte fino se hace contra el campo
+`day`, que ya viene en la fecha local de la clínica.
+`descartados_fuera_de_rango` cuenta lo que entró de más y se tiró.
+
+`estado` traduce el vocabulario de drapp (`booked` → reservado, `fulfilled` →
+atendido, `cancelled` → cancelado, `noshow` → ausente, `arrived` → en sala,
+`pending`, `active`). Un estado que no esté en esa lista se devuelve tal cual
+vino, sin inventarle significado; `estado_crudo` siempre trae el original.
 
 ### `search_records(query, section="evoluciones", desde=None, hasta=None, author=None, limit=30)`
 Full-text FTS5 sobre evoluciones (donde está el 95% del contenido clínico).
@@ -215,18 +275,31 @@ advertencias abajo).
 ## Advertencias importantes
 
 **El servidor no puede modificar nada en drapp.** `mcp_drapp/api.py` resuelve
-casi todo con `get()`. La única excepción es `buscar()`, que hace `POST` porque
-drapp no ofrece otra forma de enumerar el padrón: el listado se pide con un
-body. Esa función valida la ruta contra `POST_PERMITIDOS`, una lista blanca que
-hoy tiene un solo elemento (`search/consumers`), y rechaza cualquier otra. **No
+casi todo con `get()`. Las excepciones pasan por `buscar()`, que hace `POST`
+porque drapp no expone esos listados por `GET`: se piden con un body. Esa
+función valida la ruta contra `POST_PERMITIDOS` y rechaza cualquier otra. **No
 existe código capaz de hacer `PUT`, `PATCH` ni `DELETE`.** `tests/test_api.py`
 lo verifica en tres frentes: que la lista blanca sea exactamente la declarada,
 que no haya otros verbos en el código fuente, y que un `POST` fuera de la lista
 levante excepción.
 
-Fue una decisión deliberada, tomada sabiendo el costo: la garantía pasó de "es
-imposible hacer POST" a "el único POST posible es a esta ruta de búsqueda, y
-está verificado".
+La lista tiene hoy **dos** entradas, y las dos son consultas:
+
+| Ruta | Por qué | Autorizada |
+|---|---|---|
+| `search/consumers` | El padrón de pacientes; no hay GET equivalente | Diseño inicial |
+| `events/query` | La agenda de turnos. Es la misma llamada que hace la app web al abrir el calendario | 2026-08-30 |
+
+Cada entrada nueva debilita un poco la garantía, que pasó de "es imposible
+hacer POST" a "los únicos POST posibles son estas dos consultas, y está
+verificado". Por eso agregar una es una decisión explícita del usuario, no un
+detalle de implementación: el test que fija la lista existe para que ampliarla
+sin querer sea imposible.
+
+**El contador `events` de `stats` no sirve para contar turnos.** Está en el
+corpus y es engañoso: dice `2` para un paciente que tiene 1 turno futuro y 3
+pasados, y da 0 para 1447 de los 1575 pacientes. Los turnos de verdad salen de
+`agenda` y de `get_patient`, no de ahí.
 
 **`PA` significa "peso actual" en kg**, en la notación de esta clínica — no
 presión arterial. La única excepción es el contexto de MAPA (monitoreo
